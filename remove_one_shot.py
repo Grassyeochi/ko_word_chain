@@ -63,6 +63,7 @@ def synchronize_word_states_fixed():
                     UPDATE ko_word w1
                     INNER JOIN ko_word w2 
                         ON w2.start_char = w1.end_char
+                        AND w2.can_use = TRUE
                     SET w1.can_use = TRUE
                     WHERE w1.num BETWEEN %s AND %s
                     AND w1.can_use = FALSE

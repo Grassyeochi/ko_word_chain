@@ -44,20 +44,13 @@ class DatabaseManager:
         except Exception as e:
             print(f"[오류] DB 연결 실패: {e}")
 
-    def check_and_use_word(self, word, nickname):
-        """
-        [수정됨] 요구사항 2-1 반영: can_use = TRUE 조건 추가
-        """
+    def check_and_use_word(self, word):
         if not self.conn or not self.conn.open:
             self.connect()
             if not self.conn: return False
 
         try:
             with self.conn.cursor() as cursor:
-                # [쿼리 수정] 
-                # 1. 단어 일치 (word = %s)
-                # 2. 이번 게임에서 미사용 (is_use = FALSE)
-                # 3. 게임 사용 허가된 단어 (can_use = TRUE)
                 sql_check = """
                     SELECT num FROM ko_word 
                     WHERE word = %s 
@@ -69,13 +62,12 @@ class DatabaseManager:
 
                 if result:
                     pk_num = result[0]
-                    # 사용 처리 업데이트
                     sql_update = """
                         UPDATE ko_word 
-                        SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s 
+                        SET is_use = TRUE, is_use_date = NOW()
                         WHERE num = %s
                     """
-                    cursor.execute(sql_update, (nickname, pk_num))
+                    cursor.execute(sql_update, (pk_num,))
                     self.conn.commit()
                     return True
                 else:
@@ -108,7 +100,6 @@ class ChzzkMonitor:
             res = requests.get(status_url).json()
             content = res.get('content', {})
             
-            # 방송 상태 확인
             live_status = content.get('status')
             if live_status != 'OPEN':
                 print(f"[시스템] 현재 방송 상태: {live_status} (연결 중단)")
@@ -166,8 +157,10 @@ class ChzzkGameGUI(QWidget):
         
         self.start_time = time.time()
         self.last_change_time = time.time()
-        self.rank_data = {}
         self.current_word_text = ""
+        
+        # [요구사항 1] 입력 쿨타임 관리를 위한 플래그
+        self.input_locked = False 
 
         self.init_ui()
         self.setup_connections()
@@ -182,11 +175,11 @@ class ChzzkGameGUI(QWidget):
 
     def init_ui(self):
         self.setWindowTitle("치지직 한국어 끝말잇기")
-        self.resize(1000, 600)
+        self.resize(1000, 650) # 크레딧 공간 확보를 위해 세로 살짝 늘림
         self.setStyleSheet("background-color: black; color: white;")
 
         main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(30, 30, 30, 30)
+        main_layout.setContentsMargins(30, 30, 30, 20)
         main_layout.setSpacing(20)
 
         # === 상단 영역 ===
@@ -225,23 +218,18 @@ class ChzzkGameGUI(QWidget):
         # === 하단 영역 ===
         bottom_layout = QHBoxLayout()
 
+        # [요구사항 2] 순위 영역 "공사중" 처리
         rank_container = QFrame()
         rank_container.setStyleSheet("border: 2px solid white;")
         rank_layout = QVBoxLayout(rank_container)
         
-        lbl_rank_title = QLabel("순위 (정답 횟수)")
-        lbl_rank_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_rank_title.setFont(QFont("NanumBarunGothic", 15, QFont.Weight.Bold))
-        lbl_rank_title.setStyleSheet("border: none; padding-bottom: 10px;")
-        
-        self.lbl_rank_content = QLabel("데이터 없음")
-        self.lbl_rank_content.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        self.lbl_rank_content.setFont(QFont("NanumBarunGothic", 12))
-        self.lbl_rank_content.setStyleSheet("border: none;")
+        self.lbl_rank_content = QLabel("순위\n공사중")
+        self.lbl_rank_content.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_rank_content.setFont(QFont("NanumBarunGothic", 25, QFont.Weight.Bold))
+        self.lbl_rank_content.setStyleSheet("border: none; color: #AAAAAA;")
         self.lbl_rank_content.setWordWrap(True)
 
-        rank_layout.addWidget(lbl_rank_title)
-        rank_layout.addWidget(self.lbl_rank_content, stretch=1)
+        rank_layout.addWidget(self.lbl_rank_content)
         
         # === 현재 단어 표시 영역 ===
         game_display_layout = QVBoxLayout()
@@ -275,6 +263,15 @@ class ChzzkGameGUI(QWidget):
 
         main_layout.addLayout(top_layout, stretch=2)
         main_layout.addLayout(bottom_layout, stretch=8)
+
+        # [요구사항 3] 하단 크레딧 추가
+        self.lbl_credits = QLabel("이름없는존재 제작\nMade by Nameless_Anonymous\nducldpdy@naver.com")
+        self.lbl_credits.setFont(QFont("NanumBarunGothic", 10))
+        self.lbl_credits.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
+        self.lbl_credits.setStyleSheet("color: #777777; margin-top: 10px;")
+        
+        main_layout.addWidget(self.lbl_credits)
+
         self.setLayout(main_layout)
 
     def set_responsive_text(self, text):
@@ -365,8 +362,17 @@ class ChzzkGameGUI(QWidget):
         valid_starts = self.apply_dueum_rule(last_char)
         hint_str = ", ".join([f"!{c}..." for c in valid_starts])
         self.lbl_next_hint.setText(f"다음 글자: '{last_char}' (가능: {hint_str})")
+        
+    def unlock_input(self):
+        """쿨타임 종료 후 입력 잠금 해제"""
+        self.input_locked = False
+        # print("[시스템] 입력 쿨타임 종료")
 
     def handle_new_word(self, nickname, word):
+        # [요구사항 1] 쿨타임 중이면 무시
+        if self.input_locked:
+            return
+
         if len(word) < 1:
             return
 
@@ -382,21 +388,21 @@ class ChzzkGameGUI(QWidget):
             if first_char not in valid_starts:
                 return
 
-        is_success_db = self.db_manager.check_and_use_word(word, nickname)
+        # DB 기록
+        is_success_db = self.db_manager.check_and_use_word(word)
 
         if is_success_db:
+            # [요구사항 1] 성공 시 1초간 입력 잠금
+            self.input_locked = True
+            QTimer.singleShot(1000, self.unlock_input)
+            
             self.current_word_text = word
             self.set_responsive_text(word)
             
             self.last_change_time = time.time()
             self.update_runtime()
 
-            self.rank_data[nickname] = self.rank_data.get(nickname, 0) + 1
-            sorted_rank = sorted(self.rank_data.items(), key=lambda item: item[1], reverse=True)[:5]
-            rank_text = ""
-            for idx, (name, score) in enumerate(sorted_rank):
-                rank_text += f"{idx+1}. {name} ({score}회)\n"
-            self.lbl_rank_content.setText(rank_text.strip())
+            # [요구사항 2] 순위 업데이트 로직 제거됨 (공사중 텍스트 유지)
 
             self.update_hint(word[-1])
         else:
