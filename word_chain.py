@@ -7,6 +7,9 @@ import requests
 import websockets
 import re
 import pymysql
+import smtplib
+import threading
+from email.mime.text import MIMEText
 from datetime import timedelta
 from dotenv import load_dotenv
 
@@ -45,12 +48,16 @@ class DatabaseManager:
             print(f"[오류] DB 연결 실패: {e}")
 
     def check_and_use_word(self, word):
+        """
+        단어 유효성 확인 및 사용 처리
+        """
         if not self.conn or not self.conn.open:
             self.connect()
             if not self.conn: return False
 
         try:
             with self.conn.cursor() as cursor:
+                # 1. 단어 존재 여부, 미사용 여부, 사용 가능 여부 확인
                 sql_check = """
                     SELECT num FROM ko_word 
                     WHERE word = %s 
@@ -62,6 +69,7 @@ class DatabaseManager:
 
                 if result:
                     pk_num = result[0]
+                    # 2. 사용 처리
                     sql_update = """
                         UPDATE ko_word 
                         SET is_use = TRUE, is_use_date = NOW()
@@ -96,6 +104,7 @@ class ChzzkMonitor:
             return
 
         try:
+            # 1. 라이브 상태 조회
             status_url = f"https://api.chzzk.naver.com/polling/v2/channels/{self.channel_id}/live-status"
             res = requests.get(status_url).json()
             content = res.get('content', {})
@@ -108,10 +117,12 @@ class ChzzkMonitor:
 
             chat_channel_id = content['chatChannelId']
 
+            # 2. 액세스 토큰 발급
             token_url = f"https://comm-api.game.naver.com/nng_main/v1/chats/access-token?channelId={chat_channel_id}&chatType=STREAMING"
             token_res = requests.get(token_url).json()
             access_token = token_res['content']['accessToken']
 
+            # 3. 웹소켓 연결
             async with websockets.connect(self.ws_url) as websocket:
                 print(f"[시스템] 채팅 서버 연결 성공 (Chat ID: {chat_channel_id})")
                 
@@ -125,6 +136,7 @@ class ChzzkMonitor:
                         res = await websocket.recv()
                         data = json.loads(res)
 
+                        # 채팅 패킷 수신 (cmd: 93101)
                         if data.get('cmd') == 93101:
                             for chat in data.get('bdy', []):
                                 msg = chat.get('msg', '').strip()
@@ -137,6 +149,7 @@ class ChzzkMonitor:
                                         clean_word = content.split()[0]
                                         self.signals.word_detected.emit(nickname, clean_word)
 
+                        # Ping/Pong (cmd: 0 -> 10000)
                         elif data.get('cmd') == 0:
                             await websocket.send(json.dumps({"ver": "2", "cmd": 10000}))
                             
@@ -159,8 +172,11 @@ class ChzzkGameGUI(QWidget):
         self.last_change_time = time.time()
         self.current_word_text = ""
         
-        # [요구사항 1] 입력 쿨타임 관리를 위한 플래그
+        # [기능 1] DB 보호를 위한 입력 쿨타임 플래그
         self.input_locked = False 
+        
+        # [기능 4] 메일 중복 발송 방지 플래그
+        self.email_sent_flag = False
 
         self.init_ui()
         self.setup_connections()
@@ -175,7 +191,7 @@ class ChzzkGameGUI(QWidget):
 
     def init_ui(self):
         self.setWindowTitle("치지직 한국어 끝말잇기")
-        self.resize(1000, 650) # 크레딧 공간 확보를 위해 세로 살짝 늘림
+        self.resize(1000, 650)
         self.setStyleSheet("background-color: black; color: white;")
 
         main_layout = QVBoxLayout()
@@ -218,7 +234,7 @@ class ChzzkGameGUI(QWidget):
         # === 하단 영역 ===
         bottom_layout = QHBoxLayout()
 
-        # [요구사항 2] 순위 영역 "공사중" 처리
+        # [기능 2] 순위 영역 "공사중" 처리
         rank_container = QFrame()
         rank_container.setStyleSheet("border: 2px solid white;")
         rank_layout = QVBoxLayout(rank_container)
@@ -264,7 +280,7 @@ class ChzzkGameGUI(QWidget):
         main_layout.addLayout(top_layout, stretch=2)
         main_layout.addLayout(bottom_layout, stretch=8)
 
-        # [요구사항 3] 하단 크레딧 추가
+        # [기능 3] 제작자 크레딧 표시
         self.lbl_credits = QLabel("이름없는존재 제작\nMade by Nameless_Anonymous\nducldpdy@naver.com")
         self.lbl_credits.setFont(QFont("NanumBarunGothic", 10))
         self.lbl_credits.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
@@ -275,6 +291,7 @@ class ChzzkGameGUI(QWidget):
         self.setLayout(main_layout)
 
     def set_responsive_text(self, text):
+        """글자 수에 따라 폰트 크기 자동 조절"""
         length = len(text)
         font = self.lbl_current_word.font()
         
@@ -302,6 +319,7 @@ class ChzzkGameGUI(QWidget):
         self.lbl_current_word.setText(formatted_text)
 
     def apply_dueum_rule(self, char):
+        """두음법칙 적용 로직"""
         if not re.match(r'[가-힣]', char):
             return [char]
 
@@ -355,21 +373,49 @@ class ChzzkGameGUI(QWidget):
         total_elapsed = int(now - self.start_time)
         self.lbl_runtime.setText(str(timedelta(seconds=total_elapsed)))
         
-        word_elapsed = int(now - self.last_change_time)
-        self.lbl_word_elapsed.setText(str(timedelta(seconds=word_elapsed)))
+        word_elapsed_time = now - self.last_change_time
+        word_elapsed_int = int(word_elapsed_time)
+        self.lbl_word_elapsed.setText(str(timedelta(seconds=word_elapsed_int)))
 
-    def update_hint(self, last_char):
-        valid_starts = self.apply_dueum_rule(last_char)
-        hint_str = ", ".join([f"!{c}..." for c in valid_starts])
-        self.lbl_next_hint.setText(f"다음 글자: '{last_char}' (가능: {hint_str})")
-        
+        # [기능 4] 1시간(3600초) 초과 시 메일 발송
+        if word_elapsed_time > 3600 and not self.email_sent_flag:
+            self.email_sent_flag = True  # 중복 발송 방지
+            threading.Thread(target=self.send_timeout_email).start()
+
+    def send_timeout_email(self):
+        """[기능 4 수정] 네이버 권장(포트 465, SSL) 방식 메일 발송"""
+        smtp_server = os.getenv("MAIL_SERVER", "smtp.naver.com")
+        smtp_port = int(os.getenv("MAIL_PORT", 465))
+        sender = os.getenv("MAIL_SENDER")
+        password = os.getenv("MAIL_PASSWORD")
+        receiver = os.getenv("MAIL_RECEIVER")
+
+        if not (sender and password and receiver):
+            print("[시스템] 메일 설정이 누락되어 알림을 보낼 수 없습니다.")
+            return
+
+        try:
+            msg = MIMEText(f"현재 단어 '{self.current_word_text}'(으)로 게임이 1시간 이상 멈춰있습니다.\n확인해주세요.")
+            msg['Subject'] = "[알림] 끝말잇기 게임 1시간 경과"
+            msg['From'] = sender
+            msg['To'] = receiver
+
+            # 네이버 메일은 SMTP_SSL (포트 465) 사용
+            with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+                server.login(sender, password)
+                server.send_message(msg)
+            
+            print("[시스템] 1시간 경과 알림 메일을 성공적으로 발송했습니다.")
+        except Exception as e:
+            print(f"[오류] 메일 발송 실패: {e}\n현재 단어: {self.current_word_text}")
+
     def unlock_input(self):
         """쿨타임 종료 후 입력 잠금 해제"""
         self.input_locked = False
-        # print("[시스템] 입력 쿨타임 종료")
+        # print("[시스템] 입력 잠금 해제됨")
 
     def handle_new_word(self, nickname, word):
-        # [요구사항 1] 쿨타임 중이면 무시
+        # [기능 1] 쿨타임 중이면 무시
         if self.input_locked:
             return
 
@@ -392,7 +438,7 @@ class ChzzkGameGUI(QWidget):
         is_success_db = self.db_manager.check_and_use_word(word)
 
         if is_success_db:
-            # [요구사항 1] 성공 시 1초간 입력 잠금
+            # [기능 1] 성공 시 1초간 입력 잠금
             self.input_locked = True
             QTimer.singleShot(1000, self.unlock_input)
             
@@ -400,10 +446,11 @@ class ChzzkGameGUI(QWidget):
             self.set_responsive_text(word)
             
             self.last_change_time = time.time()
+            
+            # [기능 4] 단어 변경 시 메일 플래그 초기화 (다시 1시간 카운트 가능)
+            self.email_sent_flag = False
+            
             self.update_runtime()
-
-            # [요구사항 2] 순위 업데이트 로직 제거됨 (공사중 텍스트 유지)
-
             self.update_hint(word[-1])
         else:
             print(f"[게임] '{word}' - 유효하지 않거나 이미 사용된 단어입니다.")
