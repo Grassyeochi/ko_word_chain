@@ -1,5 +1,3 @@
-# src/gui.py
-
 import sys
 import os
 import time
@@ -30,8 +28,9 @@ def resource_path(relative_path):
 
 # --- 콘솔 윈도우 ---
 class ConsoleWindow(QWidget):
-    def __init__(self):
+    def __init__(self, main_window):
         super().__init__()
+        self.main_window = main_window
         self.setWindowTitle("Console")
         self.resize(400, 300)
         self.setStyleSheet("background-color: black; color: white; font-family: Consolas;")
@@ -46,14 +45,43 @@ class ConsoleWindow(QWidget):
         layout.addWidget(self.input_line)
         self.setLayout(layout)
     
-    def process_command(self):
-        cmd = self.input_line.text().strip()
-        if cmd:
-            self.output_area.append(f"> {cmd}")
-            self.output_area.append(f"[시스템] 알 수 없는 명령어입니다: {cmd}")
-            self.input_line.clear()
+    def log(self, text):
+        self.output_area.append(text)
+        self.output_area.verticalScrollBar().setValue(self.output_area.verticalScrollBar().maximum())
 
-# --- [추가됨] 게임 종료 화면 위젯 ---
+    def process_command(self):
+        cmd_full = self.input_line.text().strip()
+        self.input_line.clear()
+        if not cmd_full: return
+
+        self.log(f"> {cmd_full}")
+        
+        parts = cmd_full.split()
+        cmd = parts[0].lower()
+
+        # [1-1] chcw "단어"
+        if cmd == "chcw":
+            if len(parts) < 2:
+                self.log("[오류] 사용법: chcw \"단어\"")
+                return
+            target_word = cmd_full[len("chcw"):].strip().replace('"', '').replace("'", "")
+            if not target_word:
+                self.log("[오류] 단어를 입력해주세요.")
+                return
+            self.main_window.command_chcw(target_word)
+
+        # [1-2] rwt
+        elif cmd == "rwt":
+            self.main_window.command_rwt()
+
+        # [1-1 추가] restart
+        elif cmd == "restart":
+            self.main_window.command_restart()
+
+        else:
+            self.log(f"[오류] 알 수 없는 명령어입니다: {cmd}")
+
+# --- 게임 종료 화면 위젯 ---
 class GameOverWidget(QWidget):
     def __init__(self):
         super().__init__()
@@ -62,18 +90,15 @@ class GameOverWidget(QWidget):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.setSpacing(20)
 
-        # 1. 게임 종료 타이틀
         self.lbl_title = QLabel("게임 종료")
         self.lbl_title.setFont(QFont("NanumBarunGothic", 60, QFont.Weight.Bold))
         self.lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # 2. 부가 설명
         self.lbl_subtitle = QLabel("더 이상 사용할 수 있는 단어가 없습니다.")
         self.lbl_subtitle.setFont(QFont("NanumBarunGothic", 20))
         self.lbl_subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_subtitle.setStyleSheet("color: #CCCCCC;")
 
-        # 3. 통계 정보
         self.lbl_last_word = QLabel("최종 단어 : -")
         self.lbl_last_winner = QLabel("최종 단어를 사용한 시청자 : -")
         self.lbl_word_count = QLabel("제시된 단어 수 : 0")
@@ -82,12 +107,10 @@ class GameOverWidget(QWidget):
         self.lbl_last_word.setFont(stats_font)
         self.lbl_last_winner.setFont(stats_font)
         self.lbl_word_count.setFont(stats_font)
-        
         self.lbl_last_word.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_last_winner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_word_count.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # 4. 카운트다운
         self.lbl_countdown = QLabel("10초 후에 다시 시작합니다....")
         self.lbl_countdown.setFont(QFont("NanumBarunGothic", 14))
         self.lbl_countdown.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -99,7 +122,6 @@ class GameOverWidget(QWidget):
         layout.addWidget(self.lbl_last_winner)
         layout.addWidget(self.lbl_word_count)
         layout.addWidget(self.lbl_countdown)
-        
         self.setLayout(layout)
 
     def set_stats(self, word, nickname, count):
@@ -127,7 +149,6 @@ class ChzzkGameGUI(QWidget):
         self.email_sent_flag = False
         self.console_window = None
 
-        # 게임 종료 및 재시작용 변수
         self.restart_timer = QTimer(self)
         self.restart_timer.timeout.connect(self.tick_restart_countdown)
         self.countdown_val = 10
@@ -160,32 +181,25 @@ class ChzzkGameGUI(QWidget):
         self.setWindowTitle("치지직 한국어 끝말잇기")
         self.resize(1000, 650)
         
-        # [수정됨] StackedWidget을 사용하여 화면 전환 구현
         self.main_layout_container = QVBoxLayout(self)
         self.main_layout_container.setContentsMargins(0,0,0,0)
         
         self.stacked_widget = QStackedWidget()
-        
-        # 1. 게임 화면 위젯 생성
         self.game_widget = QWidget()
         self.game_widget.setStyleSheet("background-color: black; color: white;")
         self.setup_game_layout(self.game_widget)
-        
-        # 2. 게임 종료 화면 위젯 생성
         self.game_over_widget = GameOverWidget()
         
-        self.stacked_widget.addWidget(self.game_widget)      # Index 0
-        self.stacked_widget.addWidget(self.game_over_widget) # Index 1
+        self.stacked_widget.addWidget(self.game_widget)
+        self.stacked_widget.addWidget(self.game_over_widget)
         
         self.main_layout_container.addWidget(self.stacked_widget)
         
     def setup_game_layout(self, parent_widget):
-        """기존 게임 화면 레이아웃 구성"""
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(30, 30, 30, 20)
         main_layout.setSpacing(20)
 
-        # 상단
         top_layout = QHBoxLayout()
         self.title_label = QLabel("한국어 끝말잇기")
         self.title_label.setFont(QFont("NanumBarunGothic", 40, QFont.Weight.Bold))
@@ -212,10 +226,7 @@ class ChzzkGameGUI(QWidget):
         top_layout.addWidget(self.title_label, stretch=7)
         top_layout.addLayout(top_right_layout, stretch=3)
 
-        # 하단
         bottom_layout = QHBoxLayout()
-        
-        # 좌측 하단
         left_bottom_layout = QVBoxLayout()
         self.log_display = QTextEdit()
         self.log_display.setReadOnly(True)
@@ -228,7 +239,6 @@ class ChzzkGameGUI(QWidget):
         left_bottom_layout.addWidget(self.log_display)
         left_bottom_layout.addWidget(self.btn_console)
 
-        # 우측 하단
         right_bottom_layout = QVBoxLayout()
         self.lbl_last_winner = QLabel("현재 단어를 맞춘 사람: -")
         self.lbl_last_winner.setFixedHeight(30)
@@ -264,24 +274,75 @@ class ChzzkGameGUI(QWidget):
         main_layout.addLayout(top_layout, stretch=2)
         main_layout.addLayout(bottom_layout, stretch=8)
 
-        # 크레딧
         lbl_credits = QLabel("이름없는존재 제작\nMade by Nameless_Anonymous\nducldpdy@naver.com")
         lbl_credits.setFont(QFont("NanumBarunGothic", 10))
         lbl_credits.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
         lbl_credits.setStyleSheet("color: #777777; margin-top: 10px;")
         main_layout.addWidget(lbl_credits)
-        
         parent_widget.setLayout(main_layout)
 
     def open_console(self):
         if self.console_window is None:
-            self.console_window = ConsoleWindow()
+            self.console_window = ConsoleWindow(self)
         self.console_window.show()
+
+    # --- 콘솔 명령어 처리 메서드 ---
+    def command_chcw(self, target_word):
+        """[1-1] 현재 단어 강제 변경"""
+        admin_nick = "console-admin"
+        if self.db_manager.admin_force_use_word(target_word, admin_nick):
+            self.current_word_text = target_word
+            self.set_responsive_text(target_word)
+            self.last_change_time = time.time()
+            self.email_sent_flag = False
+            
+            self.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: {admin_nick}")
+            self.update_hint(target_word[-1])
+            
+            msg = f"[관리자] 단어가 '{target_word}'(으)로 강제 변경되었습니다."
+            self.log_message(msg)
+            if self.console_window:
+                self.console_window.log(f"[성공] {msg}")
+            
+            next_starts = apply_dueum_rule(target_word[-1])
+            any_left = False
+            for char in next_starts:
+                if not self.db_manager.check_remaining_words(char):
+                    any_left = True
+                    break
+            if not any_left:
+                self.process_game_over(target_word, admin_nick)
+        else:
+            err = f"단어 '{target_word}'를 DB에서 찾을 수 없습니다."
+            if self.console_window:
+                self.console_window.log(f"[실패] {err}")
+
+    def command_rwt(self):
+        """[1-2] 단어 경과 시간 초기화"""
+        self.last_change_time = time.time()
+        self.update_runtime()
+        self.email_sent_flag = False
+        msg = "[관리자] 단어 경과 시간이 초기화되었습니다."
+        self.log_message(msg)
+        if self.console_window:
+            self.console_window.log(f"[성공] {msg}")
+
+    def command_restart(self):
+        """[추가] 게임 강제 재시작 (종료 처리)"""
+        msg = "[관리자] 게임 강제 재시작을 요청했습니다."
+        self.log_message(msg)
+        if self.console_window:
+            self.console_window.log(f"[성공] {msg}")
+        
+        # 게임 종료 프로세스 진입 (데이터 백업 -> 결과 화면 -> 카운트다운 -> 초기화)
+        # 닉네임은 관리자 계정으로 기록
+        self.process_game_over(self.current_word_text, "console-admin")
+
+    # -------------------------------
 
     def log_message(self, message):
         self.log_display.append(message)
-        scrollbar = self.log_display.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+        self.log_display.verticalScrollBar().setValue(self.log_display.verticalScrollBar().maximum())
 
     def set_responsive_text(self, text):
         length = len(text)
@@ -321,23 +382,19 @@ class ChzzkGameGUI(QWidget):
         self.lbl_current_word.setText(formatted_text)
 
     def ask_starting_word(self):
-        # [수정됨] 수동 입력은 최초 1회 또는 필요시 사용. 자동 재시작은 별도 처리
         text, ok = QInputDialog.getText(self, '게임 설정', '시작 단어를 입력하세요:')
         if ok and text and re.fullmatch(r'[가-힣]+', text.strip()):
             start_word = text.strip()
         else:
             start_word = "시작"
-        
         self.start_game_logic(start_word)
 
     def start_game_logic(self, start_word):
-        """실제 게임 시작 처리 로직 (재시작 시에도 공통 사용)"""
         self.current_word_text = start_word
         self.set_responsive_text(start_word)
         self.last_change_time = time.time()
         self.lbl_last_winner.setText("현재 단어를 맞춘 사람: -")
         self.log_display.clear()
-        
         self.async_log_system(1, "Game", f"게임 시작 (시작 단어: {start_word})")
         self.update_hint(start_word[-1])
         self.log_message(f"[시스템] 게임 시작! 시작 단어: {start_word}")
@@ -394,7 +451,6 @@ class ChzzkGameGUI(QWidget):
 
     def handle_new_word(self, nickname, word):
         if self.input_locked: return
-        # 게임 오버 상태일 때는 입력 무시
         if self.stacked_widget.currentIndex() == 1: return
 
         if len(word) < 1: return
@@ -415,7 +471,6 @@ class ChzzkGameGUI(QWidget):
         is_success_db = self.db_manager.check_and_use_word(word, nickname)
 
         if is_success_db:
-            # === 성공 ===
             self.input_locked = True
             QTimer.singleShot(1000, self.unlock_input)
             self.play_success_sound()
@@ -430,7 +485,6 @@ class ChzzkGameGUI(QWidget):
             self.update_runtime()
             self.update_hint(word[-1])
 
-            # 게임 종료 조건 확인
             next_start_char_list = apply_dueum_rule(word[-1])
             any_word_left = False
             for char in next_start_char_list:
@@ -441,47 +495,28 @@ class ChzzkGameGUI(QWidget):
             if not any_word_left:
                 self.log_message(f"[시스템] 더 이상 이을 단어가 없습니다. 게임 종료!")
                 self.process_game_over(word, nickname)
-
         else:
             self.async_log_history(nickname, word, self.current_word_text, "Fail", "이미 사용됨/DB없음")
             self.log_message(f"[실패] {nickname}: {word} (이미 사용됨/DB 없음)")
 
     def process_game_over(self, last_word, last_winner):
-        """[추가됨] 게임 종료 처리 및 화면 전환"""
-        # 1. 데이터 백업
         self.db_manager.export_all_data_to_csv()
-        
-        # 2. 통계 가져오기
         count = self.db_manager.get_used_word_count()
-        
-        # 3. 게임 종료 화면 설정
         self.game_over_widget.set_stats(last_word, last_winner, count)
-        
-        # 4. 화면 전환
         self.stacked_widget.setCurrentIndex(1)
-        
-        # 5. 카운트다운 시작
         self.countdown_val = 10
         self.game_over_widget.update_countdown(self.countdown_val)
         self.restart_timer.start(1000)
 
     def tick_restart_countdown(self):
-        """10초 카운트다운 및 재시작"""
         self.countdown_val -= 1
         self.game_over_widget.update_countdown(self.countdown_val)
-        
         if self.countdown_val <= 0:
             self.restart_timer.stop()
             self.restart_game_auto()
 
     def restart_game_auto(self):
-        """자동 재시작 로직"""
-        # 1. DB 초기화
         self.db_manager.reset_all_tables()
-        
-        # 2. 랜덤 단어 가져오기
         start_word = self.db_manager.get_random_start_word()
-        
-        # 3. 게임 로직 리셋 및 화면 복귀
         self.start_game_logic(start_word)
         self.stacked_widget.setCurrentIndex(0)
