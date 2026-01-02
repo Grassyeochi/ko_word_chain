@@ -1,3 +1,4 @@
+# src/gui.py
 import sys
 import os
 import time
@@ -11,13 +12,14 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QFrame, QInputDialog, QSizePolicy, QMessageBox,
                              QPushButton, QTextEdit, QLineEdit, QStackedWidget)
 from PyQt6.QtCore import Qt, QTimer, QUrl
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QCloseEvent
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 from .signals import GameSignals
 from .database import DatabaseManager
 from .network import ChzzkMonitor
 from .utils import apply_dueum_rule, send_alert_email
+from .commands import CommandManager  # [신규] 명령어 모듈 임포트
 
 def resource_path(relative_path):
     try:
@@ -32,7 +34,7 @@ class ConsoleWindow(QWidget):
         super().__init__()
         self.main_window = main_window
         self.setWindowTitle("Console")
-        self.resize(400, 300)
+        self.resize(500, 400)
         self.setStyleSheet("background-color: black; color: white; font-family: Consolas;")
         layout = QVBoxLayout()
         self.output_area = QTextEdit()
@@ -56,33 +58,15 @@ class ConsoleWindow(QWidget):
 
         self.log(f"> {cmd_full}")
         
-        parts = cmd_full.split()
-        cmd = parts[0].lower()
+        # [수정] 모든 명령어 처리를 CommandManager에게 위임
+        result_msg = self.main_window.command_manager.execute(cmd_full)
+        if result_msg:
+            self.log(result_msg)
 
-        # [1-1] chcw "단어"
-        if cmd == "chcw":
-            if len(parts) < 2:
-                self.log("[오류] 사용법: chcw \"단어\"")
-                return
-            target_word = cmd_full[len("chcw"):].strip().replace('"', '').replace("'", "")
-            if not target_word:
-                self.log("[오류] 단어를 입력해주세요.")
-                return
-            self.main_window.command_chcw(target_word)
 
-        # [1-2] rwt
-        elif cmd == "rwt":
-            self.main_window.command_rwt()
-
-        # [1-1 추가] restart
-        elif cmd == "restart":
-            self.main_window.command_restart()
-
-        else:
-            self.log(f"[오류] 알 수 없는 명령어입니다: {cmd}")
-
-# --- 게임 종료 화면 위젯 ---
+# --- 게임 종료 화면 위젯 (기존 동일) ---
 class GameOverWidget(QWidget):
+    # ... (기존 코드와 동일, 생략) ...
     def __init__(self):
         super().__init__()
         self.setStyleSheet("background-color: black; color: white;")
@@ -93,16 +77,13 @@ class GameOverWidget(QWidget):
         self.lbl_title = QLabel("게임 종료")
         self.lbl_title.setFont(QFont("NanumBarunGothic", 60, QFont.Weight.Bold))
         self.lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
         self.lbl_subtitle = QLabel("더 이상 사용할 수 있는 단어가 없습니다.")
         self.lbl_subtitle.setFont(QFont("NanumBarunGothic", 20))
         self.lbl_subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_subtitle.setStyleSheet("color: #CCCCCC;")
-
         self.lbl_last_word = QLabel("최종 단어 : -")
         self.lbl_last_winner = QLabel("최종 단어를 사용한 시청자 : -")
         self.lbl_word_count = QLabel("제시된 단어 수 : 0")
-        
         stats_font = QFont("NanumBarunGothic", 18)
         self.lbl_last_word.setFont(stats_font)
         self.lbl_last_winner.setFont(stats_font)
@@ -110,7 +91,6 @@ class GameOverWidget(QWidget):
         self.lbl_last_word.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_last_winner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_word_count.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
         self.lbl_countdown = QLabel("10초 후에 다시 시작합니다....")
         self.lbl_countdown.setFont(QFont("NanumBarunGothic", 14))
         self.lbl_countdown.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -141,6 +121,9 @@ class ChzzkGameGUI(QWidget):
         self.monitor = ChzzkMonitor(self.signals)
         self.db_manager = DatabaseManager()
         
+        # [신규] CommandManager 초기화 (self를 전달하여 GUI 제어권 부여)
+        self.command_manager = CommandManager(self)
+        
         self.start_time = time.time()
         self.last_change_time = time.time()
         self.current_word_text = ""
@@ -148,6 +131,7 @@ class ChzzkGameGUI(QWidget):
         self.input_locked = False
         self.email_sent_flag = False
         self.console_window = None
+        self.answer_check_enabled = True
 
         self.restart_timer = QTimer(self)
         self.restart_timer.timeout.connect(self.tick_restart_countdown)
@@ -164,6 +148,12 @@ class ChzzkGameGUI(QWidget):
         self.timer.start(1000)
 
         asyncio.get_event_loop().create_task(self.monitor.run())
+
+    def closeEvent(self, event: QCloseEvent):
+        """프로그램 종료 시 로그 저장 및 테이블 비우기"""
+        self.db_manager.export_all_data_to_csv()
+        self.db_manager.truncate_logs_only()
+        event.accept()
 
     def init_audio(self):
         self.player = QMediaPlayer()
@@ -248,16 +238,25 @@ class ChzzkGameGUI(QWidget):
         game_display_layout = QVBoxLayout()
         game_display_layout.setContentsMargins(20, 0, 0, 0)
         game_display_layout.setSpacing(0)
+        
         lbl_cw_title = QLabel("현재 단어")
         lbl_cw_title.setFont(QFont("NanumBarunGothic", 20))
         lbl_cw_title.setAlignment(Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignCenter)
         lbl_cw_title.setStyleSheet("color: #AAAAAA; margin-bottom: 0px;")
+        
         self.lbl_current_word = QLabel("...")
         self.lbl_current_word.setFont(QFont("NanumBarunGothic", 90, QFont.Weight.Bold))
         self.lbl_current_word.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignCenter)
         self.lbl_current_word.setStyleSheet("color: white; margin-top: 0px;") 
         self.lbl_current_word.setWordWrap(True)
         self.lbl_current_word.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
+        
+        self.lbl_pause_status = QLabel("⛔ 정답 입력 중지됨 ⛔")
+        self.lbl_pause_status.setFont(QFont("NanumBarunGothic", 30, QFont.Weight.Bold))
+        self.lbl_pause_status.setStyleSheet("color: #FF4444; margin-top: 10px; margin-bottom: 10px;")
+        self.lbl_pause_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_pause_status.hide()
+
         self.lbl_next_hint = QLabel("게임 준비 중...")
         self.lbl_next_hint.setFont(QFont("NanumBarunGothic", 18))
         self.lbl_next_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -265,7 +264,9 @@ class ChzzkGameGUI(QWidget):
         
         game_display_layout.addWidget(lbl_cw_title, stretch=1)
         game_display_layout.addWidget(self.lbl_current_word, stretch=6)
+        game_display_layout.addWidget(self.lbl_pause_status, stretch=1)
         game_display_layout.addWidget(self.lbl_next_hint, stretch=2)
+        
         right_bottom_layout.addWidget(self.lbl_last_winner)
         right_bottom_layout.addLayout(game_display_layout)
 
@@ -286,59 +287,7 @@ class ChzzkGameGUI(QWidget):
             self.console_window = ConsoleWindow(self)
         self.console_window.show()
 
-    # --- 콘솔 명령어 처리 메서드 ---
-    def command_chcw(self, target_word):
-        """[1-1] 현재 단어 강제 변경"""
-        admin_nick = "console-admin"
-        if self.db_manager.admin_force_use_word(target_word, admin_nick):
-            self.current_word_text = target_word
-            self.set_responsive_text(target_word)
-            self.last_change_time = time.time()
-            self.email_sent_flag = False
-            
-            self.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: {admin_nick}")
-            self.update_hint(target_word[-1])
-            
-            msg = f"[관리자] 단어가 '{target_word}'(으)로 강제 변경되었습니다."
-            self.log_message(msg)
-            if self.console_window:
-                self.console_window.log(f"[성공] {msg}")
-            
-            next_starts = apply_dueum_rule(target_word[-1])
-            any_left = False
-            for char in next_starts:
-                if not self.db_manager.check_remaining_words(char):
-                    any_left = True
-                    break
-            if not any_left:
-                self.process_game_over(target_word, admin_nick)
-        else:
-            err = f"단어 '{target_word}'를 DB에서 찾을 수 없습니다."
-            if self.console_window:
-                self.console_window.log(f"[실패] {err}")
-
-    def command_rwt(self):
-        """[1-2] 단어 경과 시간 초기화"""
-        self.last_change_time = time.time()
-        self.update_runtime()
-        self.email_sent_flag = False
-        msg = "[관리자] 단어 경과 시간이 초기화되었습니다."
-        self.log_message(msg)
-        if self.console_window:
-            self.console_window.log(f"[성공] {msg}")
-
-    def command_restart(self):
-        """[추가] 게임 강제 재시작 (종료 처리)"""
-        msg = "[관리자] 게임 강제 재시작을 요청했습니다."
-        self.log_message(msg)
-        if self.console_window:
-            self.console_window.log(f"[성공] {msg}")
-        
-        # 게임 종료 프로세스 진입 (데이터 백업 -> 결과 화면 -> 카운트다운 -> 초기화)
-        # 닉네임은 관리자 계정으로 기록
-        self.process_game_over(self.current_word_text, "console-admin")
-
-    # -------------------------------
+    # --- [수정] 복잡한 명령어 메서드 제거 (CommandManager로 이동) ---
 
     def log_message(self, message):
         self.log_display.append(message)
@@ -395,6 +344,10 @@ class ChzzkGameGUI(QWidget):
         self.last_change_time = time.time()
         self.lbl_last_winner.setText("현재 단어를 맞춘 사람: -")
         self.log_display.clear()
+        
+        self.answer_check_enabled = True
+        self.lbl_pause_status.hide()
+        
         self.async_log_system(1, "Game", f"게임 시작 (시작 단어: {start_word})")
         self.update_hint(start_word[-1])
         self.log_message(f"[시스템] 게임 시작! 시작 단어: {start_word}")
@@ -452,6 +405,7 @@ class ChzzkGameGUI(QWidget):
     def handle_new_word(self, nickname, word):
         if self.input_locked: return
         if self.stacked_widget.currentIndex() == 1: return
+        if not self.answer_check_enabled: return
 
         if len(word) < 1: return
         if not re.fullmatch(r'[가-힣]+', word):
