@@ -7,7 +7,6 @@ from email.mime.text import MIMEText
 def apply_dueum_rule(char):
     """
     두음법칙 적용 로직
-    입력된 한 글자(char)에 대해 가능한 시작 글자 리스트를 반환
     """
     if not re.match(r'[가-힣]', char):
         return [char]
@@ -38,7 +37,7 @@ def apply_dueum_rule(char):
 
 def send_alert_email(current_word):
     """
-    타임아웃 알림 메일 발송 로직 (네이버 권장 465 SSL)
+    타임아웃 알림 메일 발송 로직
     """
     smtp_server = os.getenv("MAIL_SERVER", "smtp.naver.com")
     smtp_port = int(os.getenv("MAIL_PORT", 465))
@@ -56,7 +55,6 @@ def send_alert_email(current_word):
         msg['From'] = sender
         msg['To'] = receiver
 
-        # 네이버 등 보안 메일은 SMTP_SSL (포트 465) 사용
         with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
             server.login(sender, password)
             server.send_message(msg)

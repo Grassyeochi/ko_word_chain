@@ -6,6 +6,7 @@ import re
 import asyncio
 import threading
 import math
+import unicodedata  # [추가] 자소 분리 방지용
 from datetime import timedelta
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
@@ -19,7 +20,7 @@ from .signals import GameSignals
 from .database import DatabaseManager
 from .network import ChzzkMonitor
 from .utils import apply_dueum_rule, send_alert_email
-from .commands import CommandManager  # [신규] 명령어 모듈 임포트
+from .commands import CommandManager
 
 def resource_path(relative_path):
     try:
@@ -57,16 +58,12 @@ class ConsoleWindow(QWidget):
         if not cmd_full: return
 
         self.log(f"> {cmd_full}")
-        
-        # [수정] 모든 명령어 처리를 CommandManager에게 위임
         result_msg = self.main_window.command_manager.execute(cmd_full)
         if result_msg:
             self.log(result_msg)
 
-
-# --- 게임 종료 화면 위젯 (기존 동일) ---
+# --- 게임 종료 화면 위젯 ---
 class GameOverWidget(QWidget):
-    # ... (기존 코드와 동일, 생략) ...
     def __init__(self):
         super().__init__()
         self.setStyleSheet("background-color: black; color: white;")
@@ -112,7 +109,6 @@ class GameOverWidget(QWidget):
     def update_countdown(self, seconds):
         self.lbl_countdown.setText(f"{seconds}초 후에 다시 시작합니다....")
 
-
 # --- 메인 게임 GUI ---
 class ChzzkGameGUI(QWidget):
     def __init__(self):
@@ -120,8 +116,6 @@ class ChzzkGameGUI(QWidget):
         self.signals = GameSignals()
         self.monitor = ChzzkMonitor(self.signals)
         self.db_manager = DatabaseManager()
-        
-        # [신규] CommandManager 초기화 (self를 전달하여 GUI 제어권 부여)
         self.command_manager = CommandManager(self)
         
         self.start_time = time.time()
@@ -150,9 +144,7 @@ class ChzzkGameGUI(QWidget):
         asyncio.get_event_loop().create_task(self.monitor.run())
 
     def closeEvent(self, event: QCloseEvent):
-        """프로그램 종료 시 로그 저장 및 테이블 비우기"""
         self.db_manager.export_all_data_to_csv()
-        self.db_manager.truncate_logs_only()
         event.accept()
 
     def init_audio(self):
@@ -287,8 +279,6 @@ class ChzzkGameGUI(QWidget):
             self.console_window = ConsoleWindow(self)
         self.console_window.show()
 
-    # --- [수정] 복잡한 명령어 메서드 제거 (CommandManager로 이동) ---
-
     def log_message(self, message):
         self.log_display.append(message)
         self.log_display.verticalScrollBar().setValue(self.log_display.verticalScrollBar().maximum())
@@ -407,6 +397,9 @@ class ChzzkGameGUI(QWidget):
         if self.stacked_widget.currentIndex() == 1: return
         if not self.answer_check_enabled: return
 
+        # [수정] 유니코드 정규화
+        word = unicodedata.normalize('NFC', word)
+
         if len(word) < 1: return
         if not re.fullmatch(r'[가-힣]+', word):
             self.async_log_history(nickname, word, self.current_word_text, "Fail", "한글 아님")
@@ -422,9 +415,10 @@ class ChzzkGameGUI(QWidget):
                 self.log_message(f"[실패] {nickname}: {word} (초성 불일치)")
                 return
 
-        is_success_db = self.db_manager.check_and_use_word(word, nickname)
+        # [수정] 결과 상태 문자열 반환 (success, not_found, used, forbidden, error)
+        result_status = self.db_manager.check_and_use_word(word, nickname)
 
-        if is_success_db:
+        if result_status == "success":
             self.input_locked = True
             QTimer.singleShot(1000, self.unlock_input)
             self.play_success_sound()
@@ -449,9 +443,22 @@ class ChzzkGameGUI(QWidget):
             if not any_word_left:
                 self.log_message(f"[시스템] 더 이상 이을 단어가 없습니다. 게임 종료!")
                 self.process_game_over(word, nickname)
+
+        elif result_status == "not_found":
+            self.async_log_history(nickname, word, self.current_word_text, "Fail", "사전에 없는 단어")
+            self.log_message(f"[실패] {nickname}: {word} (단어장에 없는 단어 입니다)")
+            
+        elif result_status == "used":
+            self.async_log_history(nickname, word, self.current_word_text, "Fail", "이미 사용됨")
+            self.log_message(f"[실패] {nickname}: {word} (이미 사용된 단어 입니다)")
+            
+        elif result_status == "forbidden":
+            self.async_log_history(nickname, word, self.current_word_text, "Fail", "한방단어")
+            self.log_message(f"[실패] {nickname}: {word} (한방단어 입니다)")
+            
         else:
-            self.async_log_history(nickname, word, self.current_word_text, "Fail", "이미 사용됨/DB없음")
-            self.log_message(f"[실패] {nickname}: {word} (이미 사용됨/DB 없음)")
+            # DB 에러 등
+            self.log_message(f"[오류] DB 연결 문제로 확인 불가: {word}")
 
     def process_game_over(self, last_word, last_winner):
         self.db_manager.export_all_data_to_csv()

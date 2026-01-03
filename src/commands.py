@@ -4,16 +4,10 @@ from .utils import apply_dueum_rule
 
 class CommandManager:
     def __init__(self, main_window):
-        """
-        :param main_window: ChzzkGameGUI 인스턴스 (GUI 제어용)
-        """
         self.gui = main_window
         self.db = main_window.db_manager
 
     def execute(self, full_command: str) -> str:
-        """
-        콘솔 입력을 받아 명령어를 파싱하고 실행한 뒤, 결과 메시지를 반환한다.
-        """
         parts = full_command.strip().split()
         if not parts:
             return ""
@@ -21,7 +15,6 @@ class CommandManager:
         cmd = parts[0].lower()
         args = parts[1:]
 
-        # 명령어 라우팅
         if cmd == "chcw":
             return self._handle_chcw(args, full_command)
         elif cmd == "rwt":
@@ -35,14 +28,10 @@ class CommandManager:
         else:
             return f"[오류] 알 수 없는 명령어입니다: {cmd}"
 
-    # --- 개별 명령어 처리 로직 ---
-
     def _handle_chcw(self, args, full_command):
-        # 파싱: chcw "단어" 형태 처리
         if len(args) < 1:
              return "[오류] 사용법: chcw \"단어\""
         
-        # 따옴표 제거 로직
         target_word = full_command[len("chcw"):].strip().replace('"', '').replace("'", "")
         
         if not target_word:
@@ -50,9 +39,7 @@ class CommandManager:
 
         admin_nick = "console-admin"
         
-        # 1. DB 강제 업데이트
         if self.db.admin_force_use_word(target_word, admin_nick):
-            # 2. GUI 상태 업데이트
             self.gui.current_word_text = target_word
             self.gui.set_responsive_text(target_word)
             self.gui.last_change_time = time.time()
@@ -64,7 +51,6 @@ class CommandManager:
             msg = f"[관리자] 단어가 '{target_word}'(으)로 강제 변경되었습니다."
             self.gui.log_message(msg)
 
-            # 3. 종료 조건 체크
             next_starts = apply_dueum_rule(target_word[-1])
             any_left = False
             for char in next_starts:
@@ -92,8 +78,6 @@ class CommandManager:
     def _handle_restart(self):
         msg = "[관리자] 게임 강제 재시작을 요청했습니다."
         self.gui.log_message(msg)
-        
-        # 게임 종료 프로세스 진입
         self.gui.process_game_over(self.gui.current_word_text, "console-admin")
         return f"[성공] {msg}"
 
@@ -143,14 +127,18 @@ class CommandManager:
                 if not logs:
                     return "[알림] 로그가 없거나 조회에 실패했습니다."
                 
-                # 결과 문자열 포맷팅
                 output = [f"--- [Log View: {sub_cmd}, Limit: {limit}] ---"]
                 for row in logs:
                     output.append(str(row))
                 output.append("---------------------------------------")
                 
                 return "\n".join(output)
+
             except ValueError:
-                return "[오류] 숫자를 입력해주세요."
+                return "[오류] 숫자는 정수로 입력해주세요."
+            except AttributeError:
+                return "[오류] DB 메서드(get_recent_logs)를 찾을 수 없습니다."
+            except Exception as e:
+                return f"[시스템 오류] {str(e)}"
         else:
             return "[오류] 알 수 없는 log 옵션입니다."

@@ -30,8 +30,6 @@ class DatabaseManager:
         except Exception as e:
             print(f"[오류] DB 연결 실패: {e}")
 
-    # ... (기존 log_system, log_history 생략 - 유지) ...
-
     def log_system(self, level, source, message, trace=None):
         if not self.conn or not self.conn.open:
             self.connect()
@@ -54,39 +52,64 @@ class DatabaseManager:
         except Exception as e:
             print(f"[DB 히스토리 저장 실패] {e}")
 
-    # ... (check_and_use_word, check_remaining_words, get_used_word_count 등 기존 메서드 유지) ...
-    
-    def check_and_use_word(self, word, nickname):
+    def get_recent_logs(self, log_type, limit=10):
         if not self.conn or not self.conn.open:
             self.connect()
-            if not self.conn: return False
+            if not self.conn: return []
+
+        table_name = "app_logs" if log_type == "all" else "game_history"
         try:
             with self.conn.cursor() as cursor:
-                sql_check = """
-                    SELECT num FROM ko_word 
-                    WHERE word = %s 
-                    AND is_use = FALSE 
-                    AND can_use = TRUE
-                    AND available = TRUE
-                """
+                sql = f"SELECT * FROM {table_name} ORDER BY 1 DESC LIMIT %s"
+                cursor.execute(sql, (limit,))
+                return cursor.fetchall()
+        except Exception as e:
+            print(f"[DB 조회 실패] {e}")
+            raise e
+
+    def check_and_use_word(self, word, nickname):
+        """
+        반환값: "success", "not_found", "used", "forbidden", "error"
+        """
+        word = word.strip()
+        
+        if not self.conn or not self.conn.open:
+            self.connect()
+            if not self.conn: return "error"
+
+        try:
+            with self.conn.cursor() as cursor:
+                # available 컬럼 확인
+                sql_check = "SELECT num, is_use, can_use, available FROM ko_word WHERE TRIM(word) = %s"
                 cursor.execute(sql_check, (word,))
                 result = cursor.fetchone()
 
-                if result:
-                    pk_num = result[0]
-                    sql_update = """
-                        UPDATE ko_word 
-                        SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s
-                        WHERE num = %s
-                    """
-                    cursor.execute(sql_update, (nickname, pk_num))
-                    return True
-                else:
-                    return False
+                if not result:
+                    return "not_found"
+
+                pk_num, is_use, can_use, available = result
+
+                if not available:
+                    return "not_found"
+
+                if is_use:
+                    return "used"
+
+                if not can_use:
+                    return "forbidden"
+
+                sql_update = """
+                    UPDATE ko_word 
+                    SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s
+                    WHERE num = %s
+                """
+                cursor.execute(sql_update, (nickname, pk_num))
+                return "success"
+
         except Exception as e:
             self.log_system(8, "DatabaseManager", "단어 검증 중 DB 에러 발생", str(e))
             self.conn.rollback()
-            return False
+            return "error"
             
     def check_remaining_words(self, start_char):
         if not self.conn or not self.conn.open:
@@ -127,19 +150,13 @@ class DatabaseManager:
             self.log_system(8, "DatabaseManager", "랜덤 단어 조회 실패", str(e))
             return "시작"
 
-    # [추가] 관리자 명령어용: 단어 강제 변경
     def admin_force_use_word(self, word, nickname="console-admin"):
-        """
-        [명령어 chcw] 단어의 상태를 강제로 '사용됨'으로 변경
-        - 단어가 DB에 존재해야 함 (available/can_use 무관하게 존재하면 처리)
-        """
         if not self.conn or not self.conn.open:
             self.connect()
             if not self.conn: return False
 
         try:
             with self.conn.cursor() as cursor:
-                # 단어 존재 확인 (사용 여부 무관)
                 sql_check = "SELECT num FROM ko_word WHERE word = %s"
                 cursor.execute(sql_check, (word,))
                 result = cursor.fetchone()

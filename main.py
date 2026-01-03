@@ -20,6 +20,10 @@ if __name__ == "__main__":
     window = ChzzkGameGUI()
     window.show()
     
+    # [수정] 프로그램 시작 시 맨 앞으로 가져오기 (하이라이트)
+    window.raise_()
+    window.activateWindow()
+    
     # 이벤트 루프 실행
     with loop:
         loop.run_forever()

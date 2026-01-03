@@ -99,7 +99,7 @@ CREATE TABLE `ko_word` (
   `start_char` char(1) COLLATE utf8mb4_unicode_ci GENERATED ALWAYS AS (left(`word`,1)) STORED,
   `end_char` char(1) COLLATE utf8mb4_unicode_ci GENERATED ALWAYS AS (right(`word`,1)) STORED,
   `source` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '출처',
-  `avaliable` tinyint(1) DEFAULT '1' COMMENT '게임 사용 가능 여부',
+  `available` tinyint(1) DEFAULT '1' COMMENT '게임 사용 가능 여부',
   PRIMARY KEY (`num`),
   UNIQUE KEY `word` (`word`)
 ) ENGINE=InnoDB AUTO_INCREMENT=1270538 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
