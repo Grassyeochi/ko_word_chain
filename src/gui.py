@@ -6,12 +6,13 @@ import re
 import asyncio
 import threading
 import math
-import unicodedata  # [추가] 자소 분리 방지용
+import unicodedata
 from datetime import timedelta
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QFrame, QInputDialog, QSizePolicy, QMessageBox,
-                             QPushButton, QTextEdit, QLineEdit, QStackedWidget)
+                             QPushButton, QTextEdit, QLineEdit, QStackedWidget,
+                             QDialog, QProgressBar) # [추가] QDialog, QProgressBar
 from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QFont, QCloseEvent
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -29,7 +30,149 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-# --- 콘솔 윈도우 ---
+# --- [신규] 1. 시스템 사전 점검 다이얼로그 ---
+class StartupCheckDialog(QDialog):
+    def __init__(self, monitor, db_manager):
+        super().__init__()
+        self.setWindowTitle("시스템 사전 점검")
+        self.resize(400, 200)
+        self.monitor = monitor
+        self.db = db_manager
+        self.all_passed = False
+        
+        layout = QVBoxLayout()
+        
+        # 방송 상태 라벨
+        self.lbl_stream = QLabel("방송 상태 확인 중...")
+        self.lbl_stream.setFont(QFont("NanumBarunGothic", 12))
+        layout.addWidget(self.lbl_stream)
+        
+        # DB 상태 라벨
+        self.lbl_db = QLabel("DB 연결 확인 중...")
+        self.lbl_db.setFont(QFont("NanumBarunGothic", 12))
+        layout.addWidget(self.lbl_db)
+        
+        # 진행바
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0) # 무한 로딩
+        layout.addWidget(self.progress)
+        
+        # 버튼 (다시 시도 / 시작)
+        btn_layout = QHBoxLayout()
+        self.btn_retry = QPushButton("다시 검사")
+        self.btn_retry.clicked.connect(self.run_checks)
+        self.btn_next = QPushButton("다음 단계로")
+        self.btn_next.clicked.connect(self.accept)
+        self.btn_next.setEnabled(False) # 통과 전엔 비활성화
+        
+        btn_layout.addWidget(self.btn_retry)
+        btn_layout.addWidget(self.btn_next)
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+        
+        # 창 뜨자마자 검사 시작
+        QTimer.singleShot(500, self.run_checks)
+
+    def run_checks(self):
+        self.progress.setRange(0, 0)
+        self.lbl_stream.setText("방송 상태 확인 중...")
+        self.lbl_db.setText("DB 연결 확인 중...")
+        self.btn_next.setEnabled(False)
+        self.lbl_stream.setStyleSheet("color: black;")
+        self.lbl_db.setStyleSheet("color: black;")
+        
+        # UI 갱신을 위해 잠시 대기 후 실행
+        QTimer.singleShot(100, self._process_checks)
+
+    def _process_checks(self):
+        # 1-1. 방송 상태 체크
+        is_live, msg_live = self.monitor.check_live_status_sync()
+        if is_live:
+            self.lbl_stream.setText(f"✔ 방송 상태: {msg_live}")
+            self.lbl_stream.setStyleSheet("color: green; font-weight: bold;")
+        else:
+            self.lbl_stream.setText(f"❌ 방송 상태: {msg_live}")
+            self.lbl_stream.setStyleSheet("color: red; font-weight: bold;")
+
+        # 1-2. DB 연결 및 쿼리 체크
+        is_db_ok, msg_db = self.db.test_db_integrity()
+        if is_db_ok:
+            self.lbl_db.setText(f"✔ DB 상태: {msg_db}")
+            self.lbl_db.setStyleSheet("color: green; font-weight: bold;")
+        else:
+            self.lbl_db.setText(f"❌ DB 상태: {msg_db}")
+            self.lbl_db.setStyleSheet("color: red; font-weight: bold;")
+
+        self.progress.setRange(0, 100)
+        self.progress.setValue(100)
+
+        # 둘 다 성공이면 다음 버튼 활성화
+        if is_live and is_db_ok:
+            self.all_passed = True
+            self.btn_next.setEnabled(True)
+        else:
+            self.all_passed = False
+
+# --- [신규] 2. 시작 단어 설정 다이얼로그 ---
+class StartWordOptionDialog(QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("시작 단어 설정")
+        self.resize(350, 250)
+        self.selected_mode = None # "INPUT", "RANDOM", "RECENT"
+        self.input_text = ""
+        
+        layout = QVBoxLayout()
+        layout.setSpacing(10)
+        
+        lbl_info = QLabel("게임을 시작할 단어를 선택하세요.")
+        lbl_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(lbl_info)
+        
+        # 직접 입력
+        self.input_edit = QLineEdit()
+        self.input_edit.setPlaceholderText("직접 입력 (비워두면 '시작')")
+        layout.addWidget(self.input_edit)
+        
+        # 2-1. OK (입력값 사용)
+        self.btn_ok = QPushButton("OK (입력값으로 시작)")
+        self.btn_ok.clicked.connect(self.on_ok)
+        layout.addWidget(self.btn_ok)
+        
+        # 2-2. 무작위
+        self.btn_random = QPushButton("무작위 단어 (DB)")
+        self.btn_random.clicked.connect(self.on_random)
+        layout.addWidget(self.btn_random)
+        
+        # 2-3. 최근
+        self.btn_recent = QPushButton("최근 사용한 단어 (DB)")
+        self.btn_recent.clicked.connect(self.on_recent)
+        layout.addWidget(self.btn_recent)
+        
+        # 2-4. Cancel
+        self.btn_cancel = QPushButton("Cancel (종료)")
+        self.btn_cancel.setStyleSheet("color: red;")
+        self.btn_cancel.clicked.connect(self.reject) # reject -> QDialog.Rejected 반환
+        layout.addWidget(self.btn_cancel)
+        
+        self.setLayout(layout)
+
+    def on_ok(self):
+        self.selected_mode = "INPUT"
+        self.input_text = self.input_edit.text().strip()
+        self.accept()
+
+    def on_random(self):
+        self.selected_mode = "RANDOM"
+        self.accept()
+
+    def on_recent(self):
+        self.selected_mode = "RECENT"
+        self.accept()
+
+
+# --- 콘솔 윈도우 (기존) ---
 class ConsoleWindow(QWidget):
     def __init__(self, main_window):
         super().__init__()
@@ -62,7 +205,7 @@ class ConsoleWindow(QWidget):
         if result_msg:
             self.log(result_msg)
 
-# --- 게임 종료 화면 위젯 ---
+# --- 게임 종료 화면 위젯 (기존) ---
 class GameOverWidget(QWidget):
     def __init__(self):
         super().__init__()
@@ -135,13 +278,42 @@ class ChzzkGameGUI(QWidget):
         self.init_ui()
         self.setup_connections()
         
-        self.ask_starting_word()
+        # [수정] 바로 단어를 묻지 않고, 시퀀스 실행 (윈도우 생성 후 실행)
+        QTimer.singleShot(100, self.run_startup_sequence)
         
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_runtime)
         self.timer.start(1000)
 
         asyncio.get_event_loop().create_task(self.monitor.run())
+
+    # [신규] 프로그램 시작 시퀀스 (점검 -> 단어 선택)
+    def run_startup_sequence(self):
+        # 1. 사전 점검
+        check_dlg = StartupCheckDialog(self.monitor, self.db_manager)
+        if check_dlg.exec() != QDialog.DialogCode.Accepted:
+            sys.exit() # 닫기 누르면 종료
+
+        # 2. 시작 단어 선택
+        word_dlg = StartWordOptionDialog()
+        if word_dlg.exec() == QDialog.DialogCode.Accepted:
+            # 선택 결과에 따라 처리
+            mode = word_dlg.selected_mode
+            start_word = "시작"
+
+            if mode == "INPUT":
+                text = word_dlg.input_text
+                if text and re.fullmatch(r'[가-힣]+', text):
+                    start_word = text
+            elif mode == "RANDOM":
+                start_word = self.db_manager.get_random_start_word()
+            elif mode == "RECENT":
+                start_word = self.db_manager.get_last_used_word()
+            
+            self.start_game_logic(start_word)
+        else:
+            # Cancel 버튼 누름 -> 종료
+            sys.exit()
 
     def closeEvent(self, event: QCloseEvent):
         self.db_manager.export_all_data_to_csv()
@@ -320,13 +492,7 @@ class ChzzkGameGUI(QWidget):
         self.lbl_current_word.setFont(font)
         self.lbl_current_word.setText(formatted_text)
 
-    def ask_starting_word(self):
-        text, ok = QInputDialog.getText(self, '게임 설정', '시작 단어를 입력하세요:')
-        if ok and text and re.fullmatch(r'[가-힣]+', text.strip()):
-            start_word = text.strip()
-        else:
-            start_word = "시작"
-        self.start_game_logic(start_word)
+    # [수정] 기존 ask_starting_word 메서드 제거됨 -> run_startup_sequence로 대체
 
     def start_game_logic(self, start_word):
         self.current_word_text = start_word

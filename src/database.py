@@ -30,6 +30,41 @@ class DatabaseManager:
         except Exception as e:
             print(f"[오류] DB 연결 실패: {e}")
 
+    # [신규] 시작 전 DB 무결성 테스트 (요구사항 1-2)
+    def test_db_integrity(self):
+        if not self.conn or not self.conn.open:
+            self.connect()
+            if not self.conn: return False, "DB 연결 실패"
+        
+        try:
+            with self.conn.cursor() as cursor:
+                # 요구하신 예시 쿼리 수행
+                sql = "SELECT word FROM ko_word WHERE word = '치지직' AND available = TRUE AND can_use = TRUE"
+                cursor.execute(sql)
+                # 결과가 있든 없든 쿼리가 에러 없이 돌았으면 성공으로 간주
+                # (치지직이라는 단어가 DB에 없을 수도 있으므로)
+                return True, "정상 응답"
+        except Exception as e:
+            return False, str(e)
+
+    # [신규] 가장 최근에 사용된 단어 조회 (요구사항 2-3)
+    def get_last_used_word(self):
+        if not self.conn or not self.conn.open:
+            self.connect()
+            if not self.conn: return "시작"
+        try:
+            with self.conn.cursor() as cursor:
+                # is_use_date 기준으로 내림차순 정렬하여 1개 조회
+                sql = "SELECT word FROM ko_word WHERE is_use = TRUE ORDER BY is_use_date DESC LIMIT 1"
+                cursor.execute(sql)
+                result = cursor.fetchone()
+                return result[0] if result else "시작"
+        except Exception as e:
+            self.log_system(8, "DatabaseManager", "최근 단어 조회 실패", str(e))
+            return "시작"
+
+    # ... (이하 기존 메서드들은 그대로 유지) ...
+    
     def log_system(self, level, source, message, trace=None):
         if not self.conn or not self.conn.open:
             self.connect()
@@ -68,9 +103,6 @@ class DatabaseManager:
             raise e
 
     def check_and_use_word(self, word, nickname):
-        """
-        반환값: "success", "not_found", "used", "forbidden", "error"
-        """
         word = word.strip()
         
         if not self.conn or not self.conn.open:
@@ -79,7 +111,6 @@ class DatabaseManager:
 
         try:
             with self.conn.cursor() as cursor:
-                # available 컬럼 확인
                 sql_check = "SELECT num, is_use, can_use, available FROM ko_word WHERE TRIM(word) = %s"
                 cursor.execute(sql_check, (word,))
                 result = cursor.fetchone()

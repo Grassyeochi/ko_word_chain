@@ -13,12 +13,35 @@ class ChzzkMonitor:
         self.signals = signals
         self.running = True
 
+    # [신규] 시작 전 방송 상태 확인용 (동기식) (요구사항 1-1)
+    def check_live_status_sync(self):
+        if not self.channel_id:
+            return False, "Channel ID 누락"
+        
+        try:
+            status_url = f"https://api.chzzk.naver.com/polling/v2/channels/{self.channel_id}/live-status"
+            res = requests.get(status_url, timeout=5)
+            if res.status_code != 200:
+                return False, f"API 오류 ({res.status_code})"
+            
+            data = res.json()
+            content = data.get('content', {})
+            live_status = content.get('status')
+            
+            if live_status == 'OPEN':
+                return True, "방송 중 (OPEN)"
+            else:
+                return False, f"방송 종료됨 ({live_status})"
+        except Exception as e:
+            return False, str(e)
+
     async def run(self):
         if not self.channel_id:
             self.signals.log_request.emit(10, "ChzzkMonitor", "환경변수 CHZZK_CHANNEL_ID 누락", None)
             return
 
         try:
+            # 상태 체크 로직 재활용 가능하지만, 비동기 흐름상 직접 호출
             status_url = f"https://api.chzzk.naver.com/polling/v2/channels/{self.channel_id}/live-status"
             res = requests.get(status_url).json()
             content = res.get('content', {})
