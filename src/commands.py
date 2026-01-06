@@ -17,7 +17,7 @@ class CommandManager:
 
         if cmd == "chcw":
             return self._handle_chcw(args, full_command)
-        elif cmd == "random": # [신규] random 명령어
+        elif cmd == "random": 
             return self._handle_random()
         elif cmd == "rwt":
             return self._handle_rwt()
@@ -68,7 +68,6 @@ class CommandManager:
         else:
             return f"[실패] 단어 '{target_word}'를 DB에서 찾을 수 없습니다."
 
-    # [신규] random 명령어 핸들러
     def _handle_random(self):
         admin_nick = "console-random"
         

@@ -284,7 +284,6 @@ class ChzzkGameGUI(QWidget):
         self.db_manager = DatabaseManager()
         self.command_manager = CommandManager(self)
         
-        # [수정] 런타임 시작 시간을 None으로 초기화 (게임 시작 전엔 카운트 X)
         self.start_time = None 
         self.last_change_time = time.time()
         self.current_word_text = ""
@@ -310,7 +309,6 @@ class ChzzkGameGUI(QWidget):
 
         asyncio.get_event_loop().create_task(self.monitor.run())
 
-    # 프로그램 시작 시퀀스 (점검 -> 단어 선택)
     def run_startup_sequence(self):
         # 1. 사전 점검
         check_dlg = StartupCheckDialog(self.monitor, self.db_manager)
@@ -336,7 +334,6 @@ class ChzzkGameGUI(QWidget):
         else:
             sys.exit()
 
-    # 종료 시 팝업 띄우고 단계별로 진행
     def closeEvent(self, event: QCloseEvent):
         shutdown_dlg = ShutdownDialog()
         shutdown_dlg.show()
@@ -495,10 +492,12 @@ class ChzzkGameGUI(QWidget):
         self.log_display.verticalScrollBar().setValue(self.log_display.verticalScrollBar().maximum())
 
     def set_responsive_text(self, text):
+        if not text: return
         length = len(text)
         font = self.lbl_current_word.font()
         num_lines = 1
         new_size = 90
+        
         if length > 50:
             num_lines = 6
             new_size = 25
@@ -527,12 +526,20 @@ class ChzzkGameGUI(QWidget):
         else:
             formatted_text = text
 
+        font.setPointSize(new_size)
+        self.lbl_current_word.setFont(font)
+        self.lbl_current_word.setText(formatted_text)
+
     def start_game_logic(self, start_word):
-        # [수정] 게임 시작 시점부터 타이머 가동
         self.start_time = time.time()
         
         self.current_word_text = start_word
+        
+        # [중요] 텍스트 설정 및 UI 강제 갱신
         self.set_responsive_text(start_word)
+        self.lbl_current_word.repaint()     
+        QApplication.processEvents()        
+        
         self.last_change_time = time.time()
         self.lbl_last_winner.setText("현재 단어를 맞춘 사람: -")
         self.log_display.clear()
@@ -555,7 +562,6 @@ class ChzzkGameGUI(QWidget):
         sys.exit()
 
     def update_runtime(self):
-        # [수정] start_time이 None이면(아직 게임 시작 전이면) 업데이트 생략
         if self.start_time is None:
             self.lbl_runtime.setText("00:00:00")
             return

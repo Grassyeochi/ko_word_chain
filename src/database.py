@@ -3,7 +3,7 @@ import pymysql
 import os
 import csv
 import time
-import threading # [필수] 스레드 락을 위해 추가
+import threading 
 from datetime import datetime
 
 class DatabaseManager:
@@ -14,7 +14,7 @@ class DatabaseManager:
         self.db_name = os.getenv("DB_NAME", "word_chain_game_db")
         self.port = int(os.getenv("DB_PORT", 3306))
         self.conn = None
-        self.lock = threading.Lock() # [신규] DB 접근 제어를 위한 락 생성
+        self.lock = threading.Lock() 
         self.connect()
 
     def connect(self):
@@ -27,26 +27,23 @@ class DatabaseManager:
                 port=self.port,
                 charset='utf8mb4',
                 autocommit=True,
-                cursorclass=pymysql.cursors.Cursor # 명시적 커서 클래스
+                cursorclass=pymysql.cursors.Cursor
             )
             print(f"[시스템] DB 연결 성공 (Database: {self.db_name})")
         except Exception as e:
             print(f"[오류] DB 연결 실패: {e}")
 
-    # [핵심] 연결 상태 확인 및 재연결 (Lock 내부에서 호출할 것)
     def _ensure_connection(self):
         if not self.conn:
             self.connect()
             return
         try:
-            # reconnect=True: 연결 끊겼으면 자동으로 다시 연결함
             self.conn.ping(reconnect=True)
         except Exception as e:
             print(f"[시스템] DB 재연결 시도 중 오류: {e}")
             self.connect()
 
     def test_db_integrity(self):
-        # [수정] Lock 사용
         with self.lock:
             self._ensure_connection()
             if not self.conn: return False, "DB 연결 실패"
@@ -64,14 +61,14 @@ class DatabaseManager:
             if not self.conn: return "시작"
             try:
                 with self.conn.cursor() as cursor:
-                    sql = "SELECT word FROM ko_word WHERE is_use = TRUE ORDER BY is_use_date DESC LIMIT 1"
+                    sql = "SELECT word FROM ko_word WHERE is_use = TRUE ORDER BY is_use_date DESC, num DESC LIMIT 1"
                     cursor.execute(sql)
                     result = cursor.fetchone()
-                    return result[0] if result else "시작"
+                    if result and result[0] and str(result[0]).strip():
+                        return str(result[0])
+                    else:
+                        return "시작"
             except Exception as e:
-                # 내부 로그 함수도 Lock을 쓰므로, 여기서 직접 print하거나 
-                # Lock이 재진입 가능한 RLock이 아니므로 조심해야 함.
-                # 간단히 print로 처리
                 print(f"[오류] 최근 단어 조회 실패: {e}")
                 return "시작"
     
@@ -144,7 +141,7 @@ class DatabaseManager:
 
     def check_and_use_word(self, word, nickname):
         word = word.strip()
-        with self.lock: # [중요] 게임 로직 핵심 부분 락
+        with self.lock:
             self._ensure_connection()
             if not self.conn: return "error"
             try:
@@ -170,8 +167,6 @@ class DatabaseManager:
                     return "success" if affected > 0 else "used"
 
             except Exception as e:
-                # 여기서는 내부 log_system 호출 대신 print 사용 (Deadlock 방지)
-                # 만약 log_system을 쓰고 싶다면 RLock을 써야 하나, print로 충분함
                 print(f"[오류] 단어 검증 에러: {e}")
                 self.conn.rollback()
                 return "error"
@@ -229,7 +224,9 @@ class DatabaseManager:
                         pk_num = result[0]
                         sql_update = """
                             UPDATE ko_word 
-                            SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s
+                            SET is_use = TRUE, 
+                                is_use_date = NOW(),
+                                is_use_user = %s
                             WHERE num = %s
                         """
                         cursor.execute(sql_update, (nickname, pk_num))
@@ -242,7 +239,6 @@ class DatabaseManager:
                 return False
 
     def export_all_data_to_csv(self):
-        # 백업은 시간이 걸리므로 Lock 범위 주의, 하지만 일관성을 위해 거는 게 좋음
         with self.lock:
             self._ensure_connection()
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
