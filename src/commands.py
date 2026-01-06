@@ -17,6 +17,8 @@ class CommandManager:
 
         if cmd == "chcw":
             return self._handle_chcw(args, full_command)
+        elif cmd == "random": # [신규] random 명령어
+            return self._handle_random()
         elif cmd == "rwt":
             return self._handle_rwt()
         elif cmd == "restart":
@@ -65,6 +67,39 @@ class CommandManager:
             return f"[성공] {msg}"
         else:
             return f"[실패] 단어 '{target_word}'를 DB에서 찾을 수 없습니다."
+
+    # [신규] random 명령어 핸들러
+    def _handle_random(self):
+        admin_nick = "console-random"
+        
+        new_word = self.db.get_and_use_random_available_word(admin_nick)
+        
+        if not new_word:
+            return "[실패] 사용할 수 있는 남은 단어가 DB에 없습니다."
+
+        self.gui.current_word_text = new_word
+        self.gui.set_responsive_text(new_word)
+        self.gui.last_change_time = time.time()
+        self.gui.email_sent_flag = False
+        
+        self.gui.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: {admin_nick}")
+        self.gui.update_hint(new_word[-1])
+        
+        msg = f"[관리자] 단어가 무작위 단어 '{new_word}'(으)로 변경되었습니다."
+        self.gui.log_message(msg)
+
+        next_starts = apply_dueum_rule(new_word[-1])
+        any_left = False
+        for char in next_starts:
+            if not self.db.check_remaining_words(char):
+                any_left = True
+                break
+        
+        if not any_left:
+            self.gui.process_game_over(new_word, admin_nick)
+            return f"[성공] {msg} (이후 게임 종료됨)"
+        
+        return f"[성공] {msg}"
 
     def _handle_rwt(self):
         self.gui.last_change_time = time.time()

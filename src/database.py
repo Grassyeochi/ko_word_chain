@@ -3,6 +3,7 @@ import pymysql
 import os
 import csv
 import time
+import threading # [필수] 스레드 락을 위해 추가
 from datetime import datetime
 
 class DatabaseManager:
@@ -13,6 +14,7 @@ class DatabaseManager:
         self.db_name = os.getenv("DB_NAME", "word_chain_game_db")
         self.port = int(os.getenv("DB_PORT", 3306))
         self.conn = None
+        self.lock = threading.Lock() # [신규] DB 접근 제어를 위한 락 생성
         self.connect()
 
     def connect(self):
@@ -24,229 +26,259 @@ class DatabaseManager:
                 db=self.db_name,
                 port=self.port,
                 charset='utf8mb4',
-                autocommit=True
+                autocommit=True,
+                cursorclass=pymysql.cursors.Cursor # 명시적 커서 클래스
             )
             print(f"[시스템] DB 연결 성공 (Database: {self.db_name})")
         except Exception as e:
             print(f"[오류] DB 연결 실패: {e}")
 
-    # [신규] 시작 전 DB 무결성 테스트 (요구사항 1-2)
+    # [핵심] 연결 상태 확인 및 재연결 (Lock 내부에서 호출할 것)
+    def _ensure_connection(self):
+        if not self.conn:
+            self.connect()
+            return
+        try:
+            # reconnect=True: 연결 끊겼으면 자동으로 다시 연결함
+            self.conn.ping(reconnect=True)
+        except Exception as e:
+            print(f"[시스템] DB 재연결 시도 중 오류: {e}")
+            self.connect()
+
     def test_db_integrity(self):
-        if not self.conn or not self.conn.open:
-            self.connect()
+        # [수정] Lock 사용
+        with self.lock:
+            self._ensure_connection()
             if not self.conn: return False, "DB 연결 실패"
-        
-        try:
-            with self.conn.cursor() as cursor:
-                # 요구하신 예시 쿼리 수행
-                sql = "SELECT word FROM ko_word WHERE word = '치지직' AND available = TRUE AND can_use = TRUE"
-                cursor.execute(sql)
-                # 결과가 있든 없든 쿼리가 에러 없이 돌았으면 성공으로 간주
-                # (치지직이라는 단어가 DB에 없을 수도 있으므로)
-                return True, "정상 응답"
-        except Exception as e:
-            return False, str(e)
+            try:
+                with self.conn.cursor() as cursor:
+                    sql = "SELECT word FROM ko_word WHERE word = '치지직' AND available = TRUE AND can_use = TRUE"
+                    cursor.execute(sql)
+                    return True, "정상 응답"
+            except Exception as e:
+                return False, str(e)
 
-    # [신규] 가장 최근에 사용된 단어 조회 (요구사항 2-3)
     def get_last_used_word(self):
-        if not self.conn or not self.conn.open:
-            self.connect()
+        with self.lock:
+            self._ensure_connection()
             if not self.conn: return "시작"
-        try:
-            with self.conn.cursor() as cursor:
-                # is_use_date 기준으로 내림차순 정렬하여 1개 조회
-                sql = "SELECT word FROM ko_word WHERE is_use = TRUE ORDER BY is_use_date DESC LIMIT 1"
-                cursor.execute(sql)
-                result = cursor.fetchone()
-                return result[0] if result else "시작"
-        except Exception as e:
-            self.log_system(8, "DatabaseManager", "최근 단어 조회 실패", str(e))
-            return "시작"
-
-    # ... (이하 기존 메서드들은 그대로 유지) ...
+            try:
+                with self.conn.cursor() as cursor:
+                    sql = "SELECT word FROM ko_word WHERE is_use = TRUE ORDER BY is_use_date DESC LIMIT 1"
+                    cursor.execute(sql)
+                    result = cursor.fetchone()
+                    return result[0] if result else "시작"
+            except Exception as e:
+                # 내부 로그 함수도 Lock을 쓰므로, 여기서 직접 print하거나 
+                # Lock이 재진입 가능한 RLock이 아니므로 조심해야 함.
+                # 간단히 print로 처리
+                print(f"[오류] 최근 단어 조회 실패: {e}")
+                return "시작"
     
-    def log_system(self, level, source, message, trace=None):
-        if not self.conn or not self.conn.open:
-            self.connect()
-            if not self.conn: return
-        try:
-            with self.conn.cursor() as cursor:
-                sql = "INSERT INTO app_logs (log_level, source_class, message, stack_trace) VALUES (%s, %s, %s, %s)"
-                cursor.execute(sql, (level, source, message, trace))
-        except Exception as e:
-            print(f"[DB 로그 저장 실패] {e}")
-
-    def log_history(self, nickname, input_word, previous_word, status, reason=None):
-        if not self.conn or not self.conn.open:
-            self.connect()
-            if not self.conn: return
-        try:
-            with self.conn.cursor() as cursor:
-                sql = "INSERT INTO game_history (nickname, input_word, previous_word, result_status, fail_reason) VALUES (%s, %s, %s, %s, %s)"
-                cursor.execute(sql, (nickname, input_word, previous_word, status, reason))
-        except Exception as e:
-            print(f"[DB 히스토리 저장 실패] {e}")
-
-    def get_recent_logs(self, log_type, limit=10):
-        if not self.conn or not self.conn.open:
-            self.connect()
-            if not self.conn: return []
-
-        table_name = "app_logs" if log_type == "all" else "game_history"
-        try:
-            with self.conn.cursor() as cursor:
-                sql = f"SELECT * FROM {table_name} ORDER BY 1 DESC LIMIT %s"
-                cursor.execute(sql, (limit,))
-                return cursor.fetchall()
-        except Exception as e:
-            print(f"[DB 조회 실패] {e}")
-            raise e
-
-    def check_and_use_word(self, word, nickname):
-        word = word.strip()
-        
-        if not self.conn or not self.conn.open:
-            self.connect()
-            if not self.conn: return "error"
-
-        try:
-            with self.conn.cursor() as cursor:
-                sql_check = "SELECT num, is_use, can_use, available FROM ko_word WHERE TRIM(word) = %s"
-                cursor.execute(sql_check, (word,))
-                result = cursor.fetchone()
-
-                if not result:
-                    return "not_found"
-
-                pk_num, is_use, can_use, available = result
-
-                if not available:
-                    return "not_found"
-
-                if is_use:
-                    return "used"
-
-                if not can_use:
-                    return "forbidden"
-
-                sql_update = """
-                    UPDATE ko_word 
-                    SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s
-                    WHERE num = %s
-                """
-                cursor.execute(sql_update, (nickname, pk_num))
-                return "success"
-
-        except Exception as e:
-            self.log_system(8, "DatabaseManager", "단어 검증 중 DB 에러 발생", str(e))
-            self.conn.rollback()
-            return "error"
-            
-    def check_remaining_words(self, start_char):
-        if not self.conn or not self.conn.open:
-            self.connect()
-            if not self.conn: return False
-        try:
-            with self.conn.cursor() as cursor:
-                sql = "SELECT COUNT(*) FROM ko_word WHERE start_char = %s AND is_use = FALSE AND can_use = TRUE AND available = TRUE"
-                cursor.execute(sql, (start_char,))
-                count = cursor.fetchone()[0]
-                return count == 0
-        except Exception as e:
-            self.log_system(8, "DatabaseManager", "남은 단어 확인 중 에러", str(e))
-            return False
-
-    def get_used_word_count(self):
-        if not self.conn or not self.conn.open:
-            self.connect()
-            if not self.conn: return 0
-        try:
-            with self.conn.cursor() as cursor:
-                cursor.execute("SELECT COUNT(*) FROM ko_word WHERE is_use = TRUE")
-                return cursor.fetchone()[0]
-        except Exception:
-            return 0
-
-    def get_random_start_word(self):
-        if not self.conn or not self.conn.open:
-            self.connect()
-            if not self.conn: return "시작"
-        try:
-            with self.conn.cursor() as cursor:
-                sql = "SELECT word FROM ko_word WHERE can_use = TRUE AND available = TRUE ORDER BY RAND() LIMIT 1"
-                cursor.execute(sql)
-                result = cursor.fetchone()
-                return result[0] if result else "시작"
-        except Exception as e:
-            self.log_system(8, "DatabaseManager", "랜덤 단어 조회 실패", str(e))
-            return "시작"
-
-    def admin_force_use_word(self, word, nickname="console-admin"):
-        if not self.conn or not self.conn.open:
-            self.connect()
-            if not self.conn: return False
-
-        try:
-            with self.conn.cursor() as cursor:
-                sql_check = "SELECT num FROM ko_word WHERE word = %s"
-                cursor.execute(sql_check, (word,))
-                result = cursor.fetchone()
-
-                if result:
-                    pk_num = result[0]
+    def get_and_use_random_available_word(self, nickname="console-random"):
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return None
+            try:
+                with self.conn.cursor() as cursor:
+                    sql_select = """
+                        SELECT num, word FROM ko_word 
+                        WHERE is_use = FALSE 
+                        AND can_use = TRUE 
+                        AND available = TRUE 
+                        ORDER BY RAND() LIMIT 1
+                    """
+                    cursor.execute(sql_select)
+                    result = cursor.fetchone()
+                    
+                    if not result: return None
+                    
+                    pk_num, word = result
+                    
                     sql_update = """
                         UPDATE ko_word 
-                        SET is_use = TRUE, 
-                            is_use_date = NOW(),
-                            is_use_user = %s
+                        SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s
                         WHERE num = %s
                     """
                     cursor.execute(sql_update, (nickname, pk_num))
-                    return True
-                else:
-                    return False
-        except Exception as e:
-            self.log_system(8, "DatabaseManager", f"관리자 단어 변경 실패: {word}", str(e))
-            self.conn.rollback()
-            return False
+                    return word
+            except Exception as e:
+                print(f"[오류] 랜덤 변경 실패: {e}")
+                return None
+
+    def log_system(self, level, source, message, trace=None):
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return
+            try:
+                with self.conn.cursor() as cursor:
+                    sql = "INSERT INTO app_logs (log_level, source_class, message, stack_trace) VALUES (%s, %s, %s, %s)"
+                    cursor.execute(sql, (level, source, message, trace))
+            except Exception as e:
+                print(f"[DB 로그 저장 실패] {e}")
+
+    def log_history(self, nickname, input_word, previous_word, status, reason=None):
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return
+            try:
+                with self.conn.cursor() as cursor:
+                    sql = "INSERT INTO game_history (nickname, input_word, previous_word, result_status, fail_reason) VALUES (%s, %s, %s, %s, %s)"
+                    cursor.execute(sql, (nickname, input_word, previous_word, status, reason))
+            except Exception as e:
+                print(f"[DB 히스토리 저장 실패] {e}")
+
+    def get_recent_logs(self, log_type, limit=10):
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return []
+            try:
+                table_name = "app_logs" if log_type == "all" else "game_history"
+                with self.conn.cursor() as cursor:
+                    sql = f"SELECT * FROM {table_name} ORDER BY 1 DESC LIMIT %s"
+                    cursor.execute(sql, (limit,))
+                    return cursor.fetchall()
+            except Exception as e:
+                print(f"[DB 조회 실패] {e}")
+                raise e
+
+    def check_and_use_word(self, word, nickname):
+        word = word.strip()
+        with self.lock: # [중요] 게임 로직 핵심 부분 락
+            self._ensure_connection()
+            if not self.conn: return "error"
+            try:
+                with self.conn.cursor() as cursor:
+                    sql_check = "SELECT num, is_use, can_use, available FROM ko_word WHERE TRIM(word) = %s"
+                    cursor.execute(sql_check, (word,))
+                    result = cursor.fetchone()
+
+                    if not result: return "not_found"
+                    pk_num, is_use, can_use, available = result
+
+                    if not available: return "not_found"
+                    if is_use: return "used"
+                    if not can_use: return "forbidden"
+
+                    # Atomic Update
+                    sql_update = """
+                        UPDATE ko_word 
+                        SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s
+                        WHERE num = %s AND is_use = FALSE
+                    """
+                    affected = cursor.execute(sql_update, (nickname, pk_num))
+                    return "success" if affected > 0 else "used"
+
+            except Exception as e:
+                # 여기서는 내부 log_system 호출 대신 print 사용 (Deadlock 방지)
+                # 만약 log_system을 쓰고 싶다면 RLock을 써야 하나, print로 충분함
+                print(f"[오류] 단어 검증 에러: {e}")
+                self.conn.rollback()
+                return "error"
+            
+    def check_remaining_words(self, start_char):
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return False
+            try:
+                with self.conn.cursor() as cursor:
+                    sql = "SELECT COUNT(*) FROM ko_word WHERE start_char = %s AND is_use = FALSE AND can_use = TRUE AND available = TRUE"
+                    cursor.execute(sql, (start_char,))
+                    count = cursor.fetchone()[0]
+                    return count == 0
+            except Exception as e:
+                print(f"[오류] 남은 단어 확인 에러: {e}")
+                return False
+
+    def get_used_word_count(self):
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return 0
+            try:
+                with self.conn.cursor() as cursor:
+                    cursor.execute("SELECT COUNT(*) FROM ko_word WHERE is_use = TRUE")
+                    return cursor.fetchone()[0]
+            except Exception:
+                return 0
+
+    def get_random_start_word(self):
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return "시작"
+            try:
+                with self.conn.cursor() as cursor:
+                    sql = "SELECT word FROM ko_word WHERE can_use = TRUE AND available = TRUE ORDER BY RAND() LIMIT 1"
+                    cursor.execute(sql)
+                    result = cursor.fetchone()
+                    return result[0] if result else "시작"
+            except Exception as e:
+                print(f"[오류] 랜덤 단어 조회 실패: {e}")
+                return "시작"
+
+    def admin_force_use_word(self, word, nickname="console-admin"):
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return False
+            try:
+                with self.conn.cursor() as cursor:
+                    sql_check = "SELECT num FROM ko_word WHERE word = %s"
+                    cursor.execute(sql_check, (word,))
+                    result = cursor.fetchone()
+
+                    if result:
+                        pk_num = result[0]
+                        sql_update = """
+                            UPDATE ko_word 
+                            SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s
+                            WHERE num = %s
+                        """
+                        cursor.execute(sql_update, (nickname, pk_num))
+                        return True
+                    else:
+                        return False
+            except Exception as e:
+                print(f"[오류] 관리자 단어 변경 실패: {e}")
+                self.conn.rollback()
+                return False
 
     def export_all_data_to_csv(self):
-        if not self.conn or not self.conn.open:
-            self.connect()
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_dir = "backups"
-        if not os.path.exists(backup_dir): os.makedirs(backup_dir)
-        tables = ["ko_word", "app_logs", "game_history"]
-        try:
-            with self.conn.cursor() as cursor:
-                for table in tables:
-                    sql = f"SELECT * FROM {table}"
-                    cursor.execute(sql)
-                    rows = cursor.fetchall()
-                    if cursor.description: column_names = [i[0] for i in cursor.description]
-                    else: column_names = []
-                    filename = f"{backup_dir}/{table}_{timestamp}.csv"
-                    with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
-                        writer = csv.writer(f)
-                        if column_names: writer.writerow(column_names)
-                        writer.writerows(rows)
-                    print(f"[시스템] {table} 백업 완료: {filename}")
-            return True, timestamp
-        except Exception as e:
-            print(f"[오류] CSV 내보내기 실패: {e}")
-            return False, None
+        # 백업은 시간이 걸리므로 Lock 범위 주의, 하지만 일관성을 위해 거는 게 좋음
+        with self.lock:
+            self._ensure_connection()
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_dir = "backups"
+            if not os.path.exists(backup_dir): os.makedirs(backup_dir)
+            tables = ["ko_word", "app_logs", "game_history"]
+            try:
+                with self.conn.cursor() as cursor:
+                    for table in tables:
+                        sql = f"SELECT * FROM {table}"
+                        cursor.execute(sql)
+                        rows = cursor.fetchall()
+                        if cursor.description: column_names = [i[0] for i in cursor.description]
+                        else: column_names = []
+                        filename = f"{backup_dir}/{table}_{timestamp}.csv"
+                        with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
+                            writer = csv.writer(f)
+                            if column_names: writer.writerow(column_names)
+                            writer.writerows(rows)
+                        print(f"[시스템] {table} 백업 완료: {filename}")
+                return True, timestamp
+            except Exception as e:
+                print(f"[오류] CSV 내보내기 실패: {e}")
+                return False, None
 
     def reset_all_tables(self):
-        if not self.conn or not self.conn.open:
-            self.connect()
-        try:
-            with self.conn.cursor() as cursor:
-                sql_word_reset = "UPDATE ko_word SET is_use = FALSE, is_use_date = NULL, is_use_user = NULL"
-                cursor.execute(sql_word_reset)
-                cursor.execute("TRUNCATE TABLE app_logs")
-                cursor.execute("TRUNCATE TABLE game_history")
-            print("[시스템] 모든 DB 테이블이 초기화되었습니다.")
-            return True
-        except Exception as e:
-            print(f"[오류] DB 초기화 실패: {e}")
-            return False
+        with self.lock:
+            self._ensure_connection()
+            try:
+                with self.conn.cursor() as cursor:
+                    sql_word_reset = "UPDATE ko_word SET is_use = FALSE, is_use_date = NULL, is_use_user = NULL"
+                    cursor.execute(sql_word_reset)
+                    cursor.execute("TRUNCATE TABLE app_logs")
+                    cursor.execute("TRUNCATE TABLE game_history")
+                print("[시스템] 모든 DB 테이블이 초기화되었습니다.")
+                return True
+            except Exception as e:
+                print(f"[오류] DB 초기화 실패: {e}")
+                return False
