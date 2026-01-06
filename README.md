@@ -19,6 +19,7 @@ Gemini의 도움이 아주 많았습니다.
 
 
 단어 출처
+개발자의 멍청함 때문에 몇몇 단어가 DB에 저장되지 않았을 수 있습니다.
 
 우리말샘 api - 한국어 단어
 https://opendict.korean.go.kr/main
