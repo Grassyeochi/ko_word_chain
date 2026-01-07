@@ -30,7 +30,7 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-# --- 0. 종료 알림 다이얼로그 ---
+# --- 0. 종료 알림 다이얼로그 (기존 유지) ---
 class ShutdownDialog(QDialog):
     def __init__(self):
         super().__init__()
@@ -69,7 +69,7 @@ class ShutdownDialog(QDialog):
         self.lbl_status.setText(text)
         QApplication.processEvents()
 
-# --- 1. 시스템 사전 점검 다이얼로그 ---
+# --- 1. 시스템 사전 점검 다이얼로그 (기존 유지) ---
 class StartupCheckDialog(QDialog):
     def __init__(self, monitor, db_manager):
         super().__init__()
@@ -143,7 +143,7 @@ class StartupCheckDialog(QDialog):
         else:
             self.all_passed = False
 
-# --- 2. 시작 단어 설정 다이얼로그 ---
+# --- 2. 시작 단어 설정 다이얼로그 (기존 유지) ---
 class StartWordOptionDialog(QDialog):
     def __init__(self):
         super().__init__()
@@ -195,7 +195,7 @@ class StartWordOptionDialog(QDialog):
         self.selected_mode = "RECENT"
         self.accept()
 
-# --- 콘솔 윈도우 ---
+# --- 콘솔 윈도우 (기존 유지) ---
 class ConsoleWindow(QWidget):
     def __init__(self, main_window):
         super().__init__()
@@ -228,7 +228,7 @@ class ConsoleWindow(QWidget):
         if result_msg:
             self.log(result_msg)
 
-# --- 게임 종료 화면 위젯 ---
+# --- 게임 종료 화면 위젯 (기존 유지) ---
 class GameOverWidget(QWidget):
     def __init__(self):
         super().__init__()
@@ -307,10 +307,15 @@ class ChzzkGameGUI(QWidget):
         self.timer.timeout.connect(self.update_runtime)
         self.timer.start(1000)
 
+        # [수정] 여기서는 아직 monitor를 실행하지 않음! (startup_sequence 통과 후 실행)
+        # asyncio.get_event_loop().create_task(self.monitor.run()) <-- 삭제됨
+
+    # [신규] 모니터링 시작 메서드
+    def start_monitor_service(self):
         asyncio.get_event_loop().create_task(self.monitor.run())
 
     def run_startup_sequence(self):
-        # 1. 사전 점검
+        # 1. 사전 점검 (이 단계에서는 monitor.check_live_status_sync()만 호출하므로 시그널 발생 X)
         check_dlg = StartupCheckDialog(self.monitor, self.db_manager)
         if check_dlg.exec() != QDialog.DialogCode.Accepted:
             sys.exit() 
@@ -330,6 +335,8 @@ class ChzzkGameGUI(QWidget):
             elif mode == "RECENT":
                 start_word = self.db_manager.get_last_used_word()
             
+            # [수정] 모든 준비가 끝났으니 이제 모니터링 시작
+            self.start_monitor_service()
             self.start_game_logic(start_word)
         else:
             sys.exit()
@@ -535,7 +542,7 @@ class ChzzkGameGUI(QWidget):
         
         self.current_word_text = start_word
         
-        # [중요] 텍스트 설정 및 UI 강제 갱신
+        # 텍스트 설정 및 UI 강제 갱신
         self.set_responsive_text(start_word)
         self.lbl_current_word.repaint()     
         QApplication.processEvents()        
