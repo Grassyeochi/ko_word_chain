@@ -1,18 +1,28 @@
 import pymysql
 import os
 import torch
+from torch.utils.data import Dataset # <--- [추가] 데이터셋 클래스 필수
 from transformers import BertForSequenceClassification, AutoTokenizer, TextClassificationPipeline
 from dotenv import load_dotenv
 from tqdm import tqdm
 from typing import List, Dict
 
-# .env 파일 로드
 load_dotenv()
 
-# ==========================================
-# [설정] 시작 번호 변수 (사용자 입력이 없을 시 사용됨)
-# ==========================================
 DEFAULT_START_NUM = 1 
+
+# ==========================================
+# [추가] 파이프라인 전용 데이터셋 래퍼 클래스
+# ==========================================
+class ListDataset(Dataset):
+    def __init__(self, original_list):
+        self.original_list = original_list
+        
+    def __len__(self):
+        return len(self.original_list)
+        
+    def __getitem__(self, i):
+        return self.original_list[i]
 
 class LocalAIFilterManager:
     def __init__(self):
@@ -28,19 +38,18 @@ class LocalAIFilterManager:
         }
 
         # 2. 로컬 AI 모델 로드
-        print("\n>> [시스템] AI 모델(smilegate-ai/kor_unsmile) 로딩 중...")
-        
+        print("\n>> [시스템] AI 모델 로딩 중...")
         self.device = 0 if torch.cuda.is_available() else -1
         self.device_name = "GPU(CUDA)" if self.device == 0 else "CPU"
         print(f">> [시스템] 가속 장치: {self.device_name}")
 
         model_name = 'smilegate-ai/kor_unsmile'
-        # 토크나이저 병렬 처리 경고 방지
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = BertForSequenceClassification.from_pretrained(model_name)
         
+        # 파이프라인 생성
         self.pipe = TextClassificationPipeline(
             model=self.model, 
             tokenizer=self.tokenizer, 
@@ -54,19 +63,16 @@ class LocalAIFilterManager:
         return pymysql.connect(**self.db_config)
 
     def get_filtered_count(self, start_num: int) -> int:
-        """진행률 계산용 남은 데이터 수 조회"""
         conn = self.get_connection()
         try:
             with conn.cursor() as cursor:
                 sql = "SELECT COUNT(*) as cnt FROM ko_word WHERE num >= %s AND available = TRUE"
                 cursor.execute(sql, (start_num,))
-                result = cursor.fetchone()
-                return result['cnt']
+                return cursor.fetchone()['cnt']
         finally:
             conn.close()
 
     def fetch_word_batch(self, last_seen_num: int, limit: int) -> List[Dict]:
-        """커서 기반 페이징"""
         conn = self.get_connection()
         try:
             with conn.cursor() as cursor:
@@ -83,10 +89,19 @@ class LocalAIFilterManager:
             conn.close()
 
     def analyze_words(self, words: List[str]) -> List[bool]:
-        """AI 분석"""
+        """
+        [수정됨] ListDataset을 사용하여 경고 제거 및 속도 최적화
+        """
         results = []
-        predictions = self.pipe(words)
         
+        # 1. 리스트를 PyTorch Dataset으로 포장
+        dataset = ListDataset(words)
+        
+        # 2. 파이프라인에 Dataset 객체 전달 (이제 경고가 뜨지 않습니다)
+        # batch_size를 설정하면 내부 DataLoader가 멀티스레딩으로 데이터를 공급합니다.
+        predictions = self.pipe(dataset, batch_size=self.BATCH_SIZE)
+        
+        # 3. 결과 순회 (Dataset을 쓰면 제너레이터가 반환됨)
         for pred in predictions:
             is_bad = False
             for label_data in pred:
@@ -94,10 +109,10 @@ class LocalAIFilterManager:
                     is_bad = True
                     break
             results.append(is_bad)
+            
         return results
 
     def block_words(self, target_ids: List[int]):
-        """DB 업데이트"""
         if not target_ids:
             return
         conn = self.get_connection()
@@ -114,22 +129,18 @@ class LocalAIFilterManager:
             conn.close()
 
     def run(self, start_num: int):
-        # 1. 대상 데이터 확인
-        print(f"\n>> [데이터베이스] num {start_num}번부터 데이터 조회 중...")
+        print(f"\n>> [데이터베이스] num {start_num}번부터 조회...")
         target_count = self.get_filtered_count(start_num)
         
         if target_count == 0:
-            print(f">> [알림] num {start_num} 이후로 검사할 데이터가 없습니다.")
+            print(f">> [알림] 데이터가 없습니다.")
             return
 
-        print(f">> [시작] 총 {target_count:,}건의 단어 검사를 시작합니다.")
-
-        # WHERE num > last_num 로직을 위해 시작값 - 1 설정
+        print(f">> [시작] {target_count:,}건 검사 시작.")
         last_num = start_num - 1
         total_blocked = 0
         
-        # tqdm 진행바
-        with tqdm(total=target_count, unit="word", desc="검사 중", ncols=100) as pbar:
+        with tqdm(total=target_count, unit="word", ncols=100) as pbar:
             while True:
                 rows = self.fetch_word_batch(last_num, self.BATCH_SIZE)
                 if not rows:
@@ -138,7 +149,6 @@ class LocalAIFilterManager:
                 last_num = rows[-1]['num']
                 word_list = [row['word'] for row in rows]
                 
-                # AI 분석
                 is_bad_list = self.analyze_words(word_list)
                 
                 block_ids = []
@@ -146,42 +156,24 @@ class LocalAIFilterManager:
                     if is_bad:
                         block_ids.append(rows[i]['num'])
 
-                # DB 반영
                 if block_ids:
                     self.block_words(block_ids)
                     total_blocked += len(block_ids)
 
-                # 진행바 갱신
                 pbar.update(len(rows))
                 pbar.set_postfix({'LastID': last_num, '차단됨': total_blocked})
 
-        print("\n" + "="*50)
-        print(f"   [검사 완료]")
-        print(f"   - 구간: {start_num} ~ {last_num}")
-        print(f"   - 총 차단: {total_blocked:,}개")
-        print("="*50)
+        print(f"\n[완료] 총 차단: {total_blocked:,}건")
 
 if __name__ == "__main__":
-    # ==========================================
-    # [입력 방식 수정] 사용자 입력 또는 변수 사용
-    # ==========================================
-    print("="*50)
-    print("   AI 단어 필터링 시스템 (Local Ver)")
-    print("="*50)
-
     try:
-        user_input = input(f"검사를 시작할 num 번호를 입력하세요 (엔터 시 기본값 {DEFAULT_START_NUM}부터 시작): ").strip()
+        user_input = input(f"시작 번호 입력 (기본값 {DEFAULT_START_NUM}): ").strip()
+        start_num = int(user_input) if user_input else DEFAULT_START_NUM
         
-        if user_input:
-            start_num = int(user_input)
-        else:
-            start_num = DEFAULT_START_NUM
-            print(f">> 입력이 없어 기본값({DEFAULT_START_NUM})으로 시작합니다.")
-            
+        manager = LocalAIFilterManager()
+        manager.run(start_num=start_num)
+        
     except ValueError:
-        print("\n!! 오류: 숫자를 입력해야 합니다. 프로그램을 종료합니다.")
-        exit()
-
-    # 실행
-    manager = LocalAIFilterManager()
-    manager.run(start_num=start_num)
+        print("숫자를 입력하세요.")
+    except KeyboardInterrupt:
+        print("중단됨.")

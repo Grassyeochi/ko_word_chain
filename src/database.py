@@ -43,6 +43,77 @@ class DatabaseManager:
             print(f"[시스템] DB 재연결 시도 중 오류: {e}")
             self.connect()
 
+    def check_and_use_word(self, word, nickname):
+        word = word.strip()
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return "error"
+
+            try:
+                with self.conn.cursor() as cursor:
+                    sql_check = "SELECT num, is_use, can_use, available FROM ko_word WHERE TRIM(word) = %s"
+                    cursor.execute(sql_check, (word,))
+                    result = cursor.fetchone()
+
+                    # 1. DB에 없는 경우
+                    if not result: 
+                        return "not_found"
+
+                    pk_num, is_use, can_use, available = result
+
+                    # 2. DB에 있으나 available이 False인 경우 (GUI엔 없는 단어로 위장)
+                    if not available:
+                        return "unavailable"
+
+                    # 3. 이미 사용된 경우
+                    if is_use: 
+                        return "used"
+
+                    # 4. 한방 단어인 경우
+                    if not can_use: 
+                        return "forbidden"
+
+                    # 5. 정상 사용 처리
+                    sql_update = """
+                        UPDATE ko_word 
+                        SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s
+                        WHERE num = %s AND is_use = FALSE
+                    """
+                    affected = cursor.execute(sql_update, (nickname, pk_num))
+                    return "success" if affected > 0 else "used"
+
+            except Exception as e:
+                print(f"[오류] 단어 검증 에러: {e}")
+                self.conn.rollback()
+                return "error"
+    
+    def get_used_word_count(self):
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return 0
+            try:
+                with self.conn.cursor() as cursor:
+                    cursor.execute("SELECT COUNT(*) FROM ko_word WHERE is_use = TRUE")
+                    return cursor.fetchone()[0]
+            except Exception:
+                return 0
+
+    def mark_word_as_forbidden(self, word):
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return False
+            try:
+                with self.conn.cursor() as cursor:
+                    sql = "UPDATE ko_word SET can_use = FALSE WHERE TRIM(word) = %s"
+                    affected = cursor.execute(sql, (word.strip(),))
+                    if affected > 0:
+                        print(f"[시스템] 단어 '{word}' DB 차단 처리 완료 (can_use=FALSE)")
+                        return True
+                    return False
+            except Exception as e:
+                print(f"[오류] 단어 차단 실패: {e}")
+                return False
+
     def test_db_integrity(self):
         with self.lock:
             self._ensure_connection()
@@ -138,39 +209,7 @@ class DatabaseManager:
             except Exception as e:
                 print(f"[DB 조회 실패] {e}")
                 raise e
-
-    def check_and_use_word(self, word, nickname):
-        word = word.strip()
-        with self.lock:
-            self._ensure_connection()
-            if not self.conn: return "error"
-            try:
-                with self.conn.cursor() as cursor:
-                    sql_check = "SELECT num, is_use, can_use, available FROM ko_word WHERE TRIM(word) = %s"
-                    cursor.execute(sql_check, (word,))
-                    result = cursor.fetchone()
-
-                    if not result: return "not_found"
-                    pk_num, is_use, can_use, available = result
-
-                    if not available: return "not_found"
-                    if is_use: return "used"
-                    if not can_use: return "forbidden"
-
-                    # Atomic Update
-                    sql_update = """
-                        UPDATE ko_word 
-                        SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s
-                        WHERE num = %s AND is_use = FALSE
-                    """
-                    affected = cursor.execute(sql_update, (nickname, pk_num))
-                    return "success" if affected > 0 else "used"
-
-            except Exception as e:
-                print(f"[오류] 단어 검증 에러: {e}")
-                self.conn.rollback()
-                return "error"
-            
+    
     def check_remaining_words(self, start_char):
         with self.lock:
             self._ensure_connection()
@@ -184,17 +223,6 @@ class DatabaseManager:
             except Exception as e:
                 print(f"[오류] 남은 단어 확인 에러: {e}")
                 return False
-
-    def get_used_word_count(self):
-        with self.lock:
-            self._ensure_connection()
-            if not self.conn: return 0
-            try:
-                with self.conn.cursor() as cursor:
-                    cursor.execute("SELECT COUNT(*) FROM ko_word WHERE is_use = TRUE")
-                    return cursor.fetchone()[0]
-            except Exception:
-                return 0
 
     def get_random_start_word(self):
         with self.lock:

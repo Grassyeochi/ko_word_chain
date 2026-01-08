@@ -4,7 +4,7 @@ import json
 import requests
 import websockets
 import traceback
-import asyncio # [추가] 대기 시간을 위해 필요
+import asyncio
 from .signals import GameSignals
 
 class ChzzkMonitor:
@@ -40,10 +40,8 @@ class ChzzkMonitor:
             self.signals.log_request.emit(10, "ChzzkMonitor", "환경변수 CHZZK_CHANNEL_ID 누락", None)
             return
 
-        # [수정] 무한 재연결 루프
         while self.running:
             try:
-                # 1. 채널 정보 및 토큰 발급
                 status_url = f"https://api.chzzk.naver.com/polling/v2/channels/{self.channel_id}/live-status"
                 res = requests.get(status_url).json()
                 content = res.get('content', {})
@@ -60,7 +58,6 @@ class ChzzkMonitor:
                 token_res = requests.get(token_url).json()
                 access_token = token_res['content']['accessToken']
 
-                # 2. 웹소켓 연결 시도
                 async with websockets.connect(self.ws_url) as websocket:
                     print(f"[시스템] 채팅 서버 연결 성공 (Chat ID: {chat_channel_id})")
                     self.signals.log_request.emit(1, "ChzzkMonitor", "채팅 서버 연결 성공", None)
@@ -70,7 +67,6 @@ class ChzzkMonitor:
                         "bdy": {"uid": None, "devType": 2001, "accTkn": access_token, "auth": "READ"}
                     }))
 
-                    # 메시지 수신 루프
                     while self.running:
                         try:
                             res = await websocket.recv()
@@ -83,25 +79,28 @@ class ChzzkMonitor:
                                     profile = json.loads(chat.get('profile', '{}'))
                                     nickname = profile.get('nickname', '익명')
 
+                                    if "클린봇이 부적절한 표현을 감지했습니다" in msg:
+                                        self.signals.log_request.emit(5, "ChzzkMonitor", f"클린봇 감지됨 ({nickname})", None)
+                                        continue 
+
                                     if msg.startswith("!"):
                                         content = msg[1:].strip()
                                         if content:
                                             clean_word = content.split()[0]
                                             self.signals.word_detected.emit(nickname, clean_word)
 
-                            elif cmd == 0: # Ping -> Pong
+                            elif cmd == 0:
                                 await websocket.send(json.dumps({"ver": "2", "cmd": 10000}))
                                 
                         except Exception as e:
                             print(f"[연결 끊김] {e}")
                             self.signals.log_request.emit(8, "ChzzkMonitor", "웹소켓 연결 끊김, 재접속 시도", traceback.format_exc())
-                            break # 내부 루프 탈출 -> 외부 루프(재연결)로 이동
+                            break 
             
             except Exception as e:
                 print(f"[접속 오류] {e}")
                 self.signals.log_request.emit(9, "ChzzkMonitor", "접속 시도 중 오류", traceback.format_exc())
             
-            # 연결 실패 또는 끊김 발생 시 잠시 대기 후 재시도
             if self.running:
                 print("[시스템] 3초 후 재연결을 시도합니다...")
                 await asyncio.sleep(3)

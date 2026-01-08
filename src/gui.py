@@ -7,10 +7,10 @@ import asyncio
 import threading
 import math
 import unicodedata
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QFrame, QInputDialog, QSizePolicy, QMessageBox,
+                             QFrame, QSizePolicy, QMessageBox, QGridLayout,
                              QPushButton, QTextEdit, QLineEdit, QStackedWidget,
                              QDialog, QProgressBar, QApplication)
 from PyQt6.QtCore import Qt, QTimer, QUrl
@@ -20,7 +20,7 @@ from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from .signals import GameSignals
 from .database import DatabaseManager
 from .network import ChzzkMonitor
-from .utils import apply_dueum_rule, send_alert_email
+from .utils import apply_dueum_rule, send_alert_email, ProfanityFilter, update_env_variable
 from .commands import CommandManager
 
 def resource_path(relative_path):
@@ -30,7 +30,7 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-# --- 0. 종료 알림 다이얼로그 (기존 유지) ---
+# --- 0. 종료 알림 다이얼로그 ---
 class ShutdownDialog(QDialog):
     def __init__(self):
         super().__init__()
@@ -69,25 +69,32 @@ class ShutdownDialog(QDialog):
         self.lbl_status.setText(text)
         QApplication.processEvents()
 
-# --- 1. 시스템 사전 점검 다이얼로그 (기존 유지) ---
+# --- 1. 시스템 사전 점검 다이얼로그 ---
 class StartupCheckDialog(QDialog):
     def __init__(self, monitor, db_manager):
         super().__init__()
         self.setWindowTitle("시스템 사전 점검")
-        self.resize(400, 200)
+        self.resize(400, 250) # 높이 약간 증가
         self.monitor = monitor
         self.db = db_manager
         self.all_passed = False
         
         layout = QVBoxLayout()
         
+        # 1-1. 방송 상태 라벨
         self.lbl_stream = QLabel("방송 상태 확인 중...")
         self.lbl_stream.setFont(QFont("NanumBarunGothic", 12))
         layout.addWidget(self.lbl_stream)
         
+        # 1-2. DB 상태 라벨
         self.lbl_db = QLabel("DB 연결 확인 중...")
         self.lbl_db.setFont(QFont("NanumBarunGothic", 12))
         layout.addWidget(self.lbl_db)
+
+        # 1-3. 환경변수 날짜 라벨 (신규)
+        self.lbl_env = QLabel("환경변수(날짜) 확인 중...")
+        self.lbl_env.setFont(QFont("NanumBarunGothic", 12))
+        layout.addWidget(self.lbl_env)
         
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
@@ -96,11 +103,18 @@ class StartupCheckDialog(QDialog):
         btn_layout = QHBoxLayout()
         self.btn_retry = QPushButton("다시 검사")
         self.btn_retry.clicked.connect(self.run_checks)
+        
+        # [신규] 무시하고 시작 버튼
+        self.btn_ignore = QPushButton("무시하고 시작")
+        self.btn_ignore.setStyleSheet("color: orange; font-weight: bold;")
+        self.btn_ignore.clicked.connect(self.on_ignore)
+
         self.btn_next = QPushButton("다음 단계로")
         self.btn_next.clicked.connect(self.accept)
         self.btn_next.setEnabled(False)
         
         btn_layout.addWidget(self.btn_retry)
+        btn_layout.addWidget(self.btn_ignore) # 버튼 추가
         btn_layout.addWidget(self.btn_next)
         layout.addLayout(btn_layout)
         
@@ -108,16 +122,26 @@ class StartupCheckDialog(QDialog):
         
         QTimer.singleShot(500, self.run_checks)
 
+    def on_ignore(self):
+        # 검사 결과 상관없이 통과 처리
+        self.accept()
+
     def run_checks(self):
         self.progress.setRange(0, 0)
         self.lbl_stream.setText("방송 상태 확인 중...")
-        self.lbl_db.setText("DB 연결 확인 중...")
-        self.btn_next.setEnabled(False)
         self.lbl_stream.setStyleSheet("color: black;")
+        
+        self.lbl_db.setText("DB 연결 확인 중...")
         self.lbl_db.setStyleSheet("color: black;")
+        
+        self.lbl_env.setText("환경변수(날짜) 확인 중...")
+        self.lbl_env.setStyleSheet("color: black;")
+
+        self.btn_next.setEnabled(False)
         QTimer.singleShot(100, self._process_checks)
 
     def _process_checks(self):
+        # 1. 방송 상태 체크
         is_live, msg_live = self.monitor.check_live_status_sync()
         if is_live:
             self.lbl_stream.setText(f"✔ 방송 상태: {msg_live}")
@@ -126,6 +150,7 @@ class StartupCheckDialog(QDialog):
             self.lbl_stream.setText(f"❌ 방송 상태: {msg_live}")
             self.lbl_stream.setStyleSheet("color: red; font-weight: bold;")
 
+        # 2. DB 연결 체크
         is_db_ok, msg_db = self.db.test_db_integrity()
         if is_db_ok:
             self.lbl_db.setText(f"✔ DB 상태: {msg_db}")
@@ -134,10 +159,35 @@ class StartupCheckDialog(QDialog):
             self.lbl_db.setText(f"❌ DB 상태: {msg_db}")
             self.lbl_db.setStyleSheet("color: red; font-weight: bold;")
 
+        # 3. [신규] 환경변수 날짜 체크
+        is_env_ok = False
+        env_date_str = os.getenv("db_reset_time")
+        
+        if not env_date_str:
+            self.lbl_env.setText("❌ 환경변수(db_reset_time) 없음")
+            self.lbl_env.setStyleSheet("color: red; font-weight: bold;")
+        else:
+            try:
+                # 날짜 파싱 (YYYY.MM.DD)
+                env_date = datetime.strptime(env_date_str, "%Y.%m.%d").date()
+                today = datetime.now().date()
+                
+                if env_date > today:
+                    self.lbl_env.setText(f"❌ 미래 날짜 감지 ({env_date_str})")
+                    self.lbl_env.setStyleSheet("color: red; font-weight: bold;")
+                else:
+                    self.lbl_env.setText(f"✔ 날짜 정상 ({env_date_str})")
+                    self.lbl_env.setStyleSheet("color: green; font-weight: bold;")
+                    is_env_ok = True
+            except ValueError:
+                self.lbl_env.setText(f"❌ 날짜 형식 오류 ({env_date_str})")
+                self.lbl_env.setStyleSheet("color: red; font-weight: bold;")
+
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
 
-        if is_live and is_db_ok:
+        # 모두 통과해야 다음 버튼 활성화
+        if is_live and is_db_ok and is_env_ok:
             self.all_passed = True
             self.btn_next.setEnabled(True)
         else:
@@ -195,7 +245,7 @@ class StartWordOptionDialog(QDialog):
         self.selected_mode = "RECENT"
         self.accept()
 
-# --- 콘솔 윈도우 (기존 유지) ---
+# --- 콘솔 윈도우 ---
 class ConsoleWindow(QWidget):
     def __init__(self, main_window):
         super().__init__()
@@ -228,7 +278,7 @@ class ConsoleWindow(QWidget):
         if result_msg:
             self.log(result_msg)
 
-# --- 게임 종료 화면 위젯 (기존 유지) ---
+# --- 게임 종료 화면 위젯 ---
 class GameOverWidget(QWidget):
     def __init__(self):
         super().__init__()
@@ -283,10 +333,14 @@ class ChzzkGameGUI(QWidget):
         self.monitor = ChzzkMonitor(self.signals)
         self.db_manager = DatabaseManager()
         self.command_manager = CommandManager(self)
+        self.profanity_filter = ProfanityFilter()
         
         self.start_time = None 
+        self.program_start_dt = datetime.now() 
         self.last_change_time = time.time()
         self.current_word_text = ""
+        
+        self.db_reset_date = os.getenv("db_reset_time", "알 수 없음")
         
         self.input_locked = False
         self.email_sent_flag = False
@@ -307,20 +361,14 @@ class ChzzkGameGUI(QWidget):
         self.timer.timeout.connect(self.update_runtime)
         self.timer.start(1000)
 
-        # [수정] 여기서는 아직 monitor를 실행하지 않음! (startup_sequence 통과 후 실행)
-        # asyncio.get_event_loop().create_task(self.monitor.run()) <-- 삭제됨
-
-    # [신규] 모니터링 시작 메서드
     def start_monitor_service(self):
         asyncio.get_event_loop().create_task(self.monitor.run())
 
     def run_startup_sequence(self):
-        # 1. 사전 점검 (이 단계에서는 monitor.check_live_status_sync()만 호출하므로 시그널 발생 X)
         check_dlg = StartupCheckDialog(self.monitor, self.db_manager)
         if check_dlg.exec() != QDialog.DialogCode.Accepted:
             sys.exit() 
 
-        # 2. 시작 단어 선택
         word_dlg = StartWordOptionDialog()
         if word_dlg.exec() == QDialog.DialogCode.Accepted:
             mode = word_dlg.selected_mode
@@ -335,7 +383,6 @@ class ChzzkGameGUI(QWidget):
             elif mode == "RECENT":
                 start_word = self.db_manager.get_last_used_word()
             
-            # [수정] 모든 준비가 끝났으니 이제 모니터링 시작
             self.start_monitor_service()
             self.start_game_logic(start_word)
         else:
@@ -376,7 +423,7 @@ class ChzzkGameGUI(QWidget):
 
     def init_ui(self):
         self.setWindowTitle("치지직 한국어 끝말잇기")
-        self.resize(1000, 650)
+        self.resize(1200, 700)
         
         self.main_layout_container = QVBoxLayout(self)
         self.main_layout_container.setContentsMargins(0,0,0,0)
@@ -391,102 +438,148 @@ class ChzzkGameGUI(QWidget):
         self.stacked_widget.addWidget(self.game_over_widget)
         
         self.main_layout_container.addWidget(self.stacked_widget)
-        
+
     def setup_game_layout(self, parent_widget):
-        main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(30, 30, 30, 20)
-        main_layout.setSpacing(20)
+        main_layout = QHBoxLayout() 
+        main_layout.setContentsMargins(30, 30, 30, 30)
+        main_layout.setSpacing(30)
 
-        top_layout = QHBoxLayout()
-        self.title_label = QLabel("한국어 끝말잇기")
-        self.title_label.setFont(QFont("NanumBarunGothic", 40, QFont.Weight.Bold))
-        self.title_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        # 1. 왼쪽 영역 (타이틀 + 로그 + 콘솔)
+        left_layout = QVBoxLayout()
         
-        top_right_layout = QVBoxLayout()
-        lbl_rt_title = QLabel("프로그램 런 타임")
-        lbl_rt_title.setStyleSheet("background-color: #333; padding: 5px; font-weight: bold;")
-        lbl_rt_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_runtime = QLabel("00:00:00")
-        self.lbl_runtime.setStyleSheet("border: 1px solid white; padding: 5px;")
-        self.lbl_runtime.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_elapsed_title = QLabel("현재 단어 경과 시간")
-        lbl_elapsed_title.setStyleSheet("background-color: #333; padding: 5px; margin-top: 5px; font-weight: bold;")
-        lbl_elapsed_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_word_elapsed = QLabel("00:00:00")
-        self.lbl_word_elapsed.setStyleSheet("border: 1px solid white; padding: 5px;")
-        self.lbl_word_elapsed.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_word_elapsed.setFont(QFont("NanumBarunGothic", 12))
-        top_right_layout.addWidget(lbl_rt_title)
-        top_right_layout.addWidget(self.lbl_runtime)
-        top_right_layout.addWidget(lbl_elapsed_title)
-        top_right_layout.addWidget(self.lbl_word_elapsed)
-        top_layout.addWidget(self.title_label, stretch=7)
-        top_layout.addLayout(top_right_layout, stretch=3)
+        self.title_label = QLabel("한국어 끝말잇기")
+        self.title_label.setFont(QFont("NanumBarunGothic", 50, QFont.Weight.Bold))
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        left_layout.addWidget(self.title_label)
+        
+        left_layout.addStretch(1)
 
-        bottom_layout = QHBoxLayout()
-        left_bottom_layout = QVBoxLayout()
         self.log_display = QTextEdit()
         self.log_display.setReadOnly(True)
-        self.log_display.setStyleSheet("border: 2px solid white; color: #AAAAAA; font-family: NanumBarunGothic; font-size: 12px;")
-        self.btn_console = QPushButton("CONSOLE")
-        self.btn_console.setFixedHeight(40)
-        self.btn_console.setFont(QFont("NanumBarunGothic", 12, QFont.Weight.Bold))
-        self.btn_console.setStyleSheet("QPushButton { border: 2px solid white; background-color: #333; color: white; } QPushButton:hover { background-color: #555; }")
-        self.btn_console.clicked.connect(self.open_console)
-        left_bottom_layout.addWidget(self.log_display)
-        left_bottom_layout.addWidget(self.btn_console)
-
-        right_bottom_layout = QVBoxLayout()
-        self.lbl_last_winner = QLabel("현재 단어를 맞춘 사람: -")
-        self.lbl_last_winner.setFixedHeight(30)
-        self.lbl_last_winner.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_last_winner.setStyleSheet("background-color: #222; color: #EEEEEE; font-size: 14px; border: 1px solid #555;")
+        self.log_display.setStyleSheet("""
+            border: 2px solid white; 
+            color: #AAAAAA; 
+            font-family: NanumBarunGothic; 
+            font-size: 14px;
+            background-color: #111;
+        """)
+        left_layout.addWidget(self.log_display, stretch=5)
         
-        game_display_layout = QVBoxLayout()
-        game_display_layout.setContentsMargins(20, 0, 0, 0)
-        game_display_layout.setSpacing(0)
+        self.btn_console = QPushButton("CONSOLE")
+        self.btn_console.setFixedHeight(50)
+        self.btn_console.setFont(QFont("NanumBarunGothic", 14, QFont.Weight.Bold))
+        self.btn_console.setStyleSheet("""
+            QPushButton { 
+                border: 2px solid white; 
+                background-color: #333; 
+                color: white; 
+            } 
+            QPushButton:hover { background-color: #555; }
+        """)
+        self.btn_console.clicked.connect(self.open_console)
+        left_layout.addWidget(self.btn_console)
+
+        # 2. 오른쪽 영역 (정보창 + 게임화면)
+        right_layout = QVBoxLayout()
+        
+        info_grid = QGridLayout()
+        info_grid.setSpacing(15)
+
+        lbl_style_title = "background-color: #333; padding: 8px; font-weight: bold; font-size: 14px; color: #EEE;"
+        lbl_style_val = "border: 1px solid white; padding: 8px; font-size: 14px; color: white;"
+
+        # (1) 프로그램 런 타임
+        lb_rt = QLabel("프로그램 런 타임")
+        lb_rt.setStyleSheet(lbl_style_title)
+        lb_rt.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_runtime = QLabel("-")
+        self.lbl_runtime.setStyleSheet(lbl_style_val)
+        self.lbl_runtime.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # (2) 초기화 시간
+        lb_reset = QLabel("사용된 단어 목록 초기화 된 시간")
+        lb_reset.setStyleSheet(lbl_style_title)
+        lb_reset.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_reset_time = QLabel(self.db_reset_date)
+        self.lbl_reset_time.setStyleSheet(lbl_style_val)
+        self.lbl_reset_time.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # (3) 현재 단어 경과 시간
+        lb_elapsed = QLabel("현재 단어 경과 시간")
+        lb_elapsed.setStyleSheet(lbl_style_title)
+        lb_elapsed.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_word_elapsed = QLabel("00:00:00")
+        self.lbl_word_elapsed.setStyleSheet(lbl_style_val)
+        self.lbl_word_elapsed.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # (4) 이번 게임 단어 수
+        lb_count = QLabel("이번 게임에서 제시된 단어 수")
+        lb_count.setStyleSheet(lbl_style_title)
+        lb_count.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_word_count = QLabel("0")
+        self.lbl_word_count.setStyleSheet(lbl_style_val)
+        self.lbl_word_count.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        info_grid.addWidget(lb_rt, 0, 0)
+        info_grid.addWidget(lb_reset, 0, 1)
+        info_grid.addWidget(self.lbl_runtime, 1, 0)
+        info_grid.addWidget(self.lbl_reset_time, 1, 1)
+        info_grid.addWidget(lb_elapsed, 2, 0)
+        info_grid.addWidget(lb_count, 2, 1)
+        info_grid.addWidget(self.lbl_word_elapsed, 3, 0)
+        info_grid.addWidget(self.lbl_word_count, 3, 1)
+
+        right_layout.addLayout(info_grid)
+        right_layout.addSpacing(30)
+
+        self.lbl_last_winner = QLabel("현재 단어를 맞춘 사람: -")
+        self.lbl_last_winner.setFixedHeight(40)
+        self.lbl_last_winner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_last_winner.setStyleSheet("background-color: #222; color: #EEE; font-size: 16px; border: 1px solid #555;")
+        right_layout.addWidget(self.lbl_last_winner)
+
+        game_area = QVBoxLayout()
+        game_area.addStretch(1)
         
         lbl_cw_title = QLabel("현재 단어")
-        lbl_cw_title.setFont(QFont("NanumBarunGothic", 20))
-        lbl_cw_title.setAlignment(Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignCenter)
-        lbl_cw_title.setStyleSheet("color: #AAAAAA; margin-bottom: 0px;")
+        lbl_cw_title.setFont(QFont("NanumBarunGothic", 24))
+        lbl_cw_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_cw_title.setStyleSheet("color: #AAA;")
         
         self.lbl_current_word = QLabel("...")
-        self.lbl_current_word.setFont(QFont("NanumBarunGothic", 90, QFont.Weight.Bold))
-        self.lbl_current_word.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignCenter)
-        self.lbl_current_word.setStyleSheet("color: white; margin-top: 0px;") 
+        self.lbl_current_word.setFont(QFont("NanumBarunGothic", 100, QFont.Weight.Bold))
+        self.lbl_current_word.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_current_word.setStyleSheet("color: white;")
         self.lbl_current_word.setWordWrap(True)
-        self.lbl_current_word.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
-        
+
         self.lbl_pause_status = QLabel("⛔ 정답 입력 중지됨 ⛔")
         self.lbl_pause_status.setFont(QFont("NanumBarunGothic", 30, QFont.Weight.Bold))
-        self.lbl_pause_status.setStyleSheet("color: #FF4444; margin-top: 10px; margin-bottom: 10px;")
+        self.lbl_pause_status.setStyleSheet("color: #FF4444;")
         self.lbl_pause_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_pause_status.hide()
 
-        self.lbl_next_hint = QLabel("게임 준비 중...")
-        self.lbl_next_hint.setFont(QFont("NanumBarunGothic", 18))
+        self.lbl_next_hint = QLabel("다음 단어")
+        self.lbl_next_hint.setFont(QFont("NanumBarunGothic", 20))
         self.lbl_next_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_next_hint.setStyleSheet("color: #888888; margin-top: 20px;")
-        
-        game_display_layout.addWidget(lbl_cw_title, stretch=1)
-        game_display_layout.addWidget(self.lbl_current_word, stretch=6)
-        game_display_layout.addWidget(self.lbl_pause_status, stretch=1)
-        game_display_layout.addWidget(self.lbl_next_hint, stretch=2)
-        
-        right_bottom_layout.addWidget(self.lbl_last_winner)
-        right_bottom_layout.addLayout(game_display_layout)
+        self.lbl_next_hint.setStyleSheet("color: #888;")
 
-        bottom_layout.addLayout(left_bottom_layout, stretch=3)
-        bottom_layout.addLayout(right_bottom_layout, stretch=7)
-        main_layout.addLayout(top_layout, stretch=2)
-        main_layout.addLayout(bottom_layout, stretch=8)
+        game_area.addWidget(lbl_cw_title)
+        game_area.addWidget(self.lbl_current_word)
+        game_area.addWidget(self.lbl_pause_status)
+        game_area.addWidget(self.lbl_next_hint)
+        game_area.addStretch(1)
 
+        right_layout.addLayout(game_area, stretch=1)
+        
         lbl_credits = QLabel("이름없는존재 제작\nMade by Nameless_Anonymous\nducldpdy@naver.com")
         lbl_credits.setFont(QFont("NanumBarunGothic", 10))
         lbl_credits.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
-        lbl_credits.setStyleSheet("color: #777777; margin-top: 10px;")
-        main_layout.addWidget(lbl_credits)
+        lbl_credits.setStyleSheet("color: #777;")
+        right_layout.addWidget(lbl_credits)
+
+        main_layout.addLayout(left_layout, stretch=3) 
+        main_layout.addLayout(right_layout, stretch=7) 
+        
         parent_widget.setLayout(main_layout)
 
     def open_console(self):
@@ -542,7 +635,6 @@ class ChzzkGameGUI(QWidget):
         
         self.current_word_text = start_word
         
-        # 텍스트 설정 및 UI 강제 갱신
         self.set_responsive_text(start_word)
         self.lbl_current_word.repaint()     
         QApplication.processEvents()        
@@ -554,6 +646,9 @@ class ChzzkGameGUI(QWidget):
         self.answer_check_enabled = True
         self.lbl_pause_status.hide()
         
+        count = self.db_manager.get_used_word_count()
+        self.lbl_word_count.setText(str(count))
+
         self.async_log_system(1, "Game", f"게임 시작 (시작 단어: {start_word})")
         self.update_hint(start_word[-1])
         self.log_message(f"[시스템] 게임 시작! 시작 단어: {start_word}")
@@ -570,12 +665,17 @@ class ChzzkGameGUI(QWidget):
 
     def update_runtime(self):
         if self.start_time is None:
-            self.lbl_runtime.setText("00:00:00")
+            start_str = self.program_start_dt.strftime("%Y.%m.%d %H:%M:%S")
+            self.lbl_runtime.setText(f"{start_str} - 00:00:00")
             return
 
         now = time.time()
-        total_elapsed = int(now - self.start_time)
-        self.lbl_runtime.setText(str(timedelta(seconds=total_elapsed)))
+        total_elapsed_sec = int(now - self.start_time)
+        total_delta = timedelta(seconds=total_elapsed_sec)
+        
+        start_str = self.program_start_dt.strftime("%Y.%m.%d %H:%M:%S")
+        self.lbl_runtime.setText(f"{start_str} - {str(total_delta)}")
+
         word_elapsed = now - self.last_change_time
         self.lbl_word_elapsed.setText(str(timedelta(seconds=int(word_elapsed))))
 
@@ -619,6 +719,13 @@ class ChzzkGameGUI(QWidget):
 
         word = unicodedata.normalize('NFC', word)
 
+        is_bad, bad_word = self.profanity_filter.check(word)
+        if is_bad:
+            self.log_message(f"[차단] {nickname}: {word} (금지어 포함: {bad_word})")
+            self.async_log_history(nickname, word, self.current_word_text, "Fail", f"금지어({bad_word})")
+            threading.Thread(target=self.db_manager.mark_word_as_forbidden, args=(word,)).start()
+            return
+
         if len(word) < 1: return
         if not re.fullmatch(r'[가-힣]+', word):
             self.async_log_history(nickname, word, self.current_word_text, "Fail", "한글 아님")
@@ -648,6 +755,10 @@ class ChzzkGameGUI(QWidget):
             self.set_responsive_text(word)
             self.last_change_time = time.time()
             self.email_sent_flag = False 
+            
+            current_count = int(self.lbl_word_count.text())
+            self.lbl_word_count.setText(str(current_count + 1))
+            
             self.update_runtime()
             self.update_hint(word[-1])
 
@@ -662,17 +773,21 @@ class ChzzkGameGUI(QWidget):
                 self.log_message(f"[시스템] 더 이상 이을 단어가 없습니다. 게임 종료!")
                 self.process_game_over(word, nickname)
 
+        elif result_status == "unavailable":
+            self.async_log_history(nickname, word, self.current_word_text, "Fail", "부적절한 단어 입력")
+            self.log_message(f"[실패] {nickname}: {word} (사전에 없는 단어입니다)") 
+
         elif result_status == "not_found":
             self.async_log_history(nickname, word, self.current_word_text, "Fail", "사전에 없는 단어")
-            self.log_message(f"[실패] {nickname}: {word} (단어장에 없는 단어 입니다)")
+            self.log_message(f"[실패] {nickname}: {word} (사전에 없는 단어입니다)")
             
         elif result_status == "used":
             self.async_log_history(nickname, word, self.current_word_text, "Fail", "이미 사용됨")
             self.log_message(f"[실패] {nickname}: {word} (이미 사용된 단어 입니다)")
             
         elif result_status == "forbidden":
-            self.async_log_history(nickname, word, self.current_word_text, "Fail", "한방단어")
-            self.log_message(f"[실패] {nickname}: {word} (한방단어 입니다)")
+            self.async_log_history(nickname, word, self.current_word_text, "Fail", "한방단어/금지어")
+            self.log_message(f"[실패] {nickname}: {word} (사용 금지된 단어 입니다)")
             
         else:
             self.log_message(f"[오류] DB 연결 문제로 확인 불가: {word}")
@@ -680,6 +795,11 @@ class ChzzkGameGUI(QWidget):
     def process_game_over(self, last_word, last_winner):
         self.db_manager.export_all_data_to_csv()
         count = self.db_manager.get_used_word_count()
+        
+        today_str = datetime.now().strftime("%Y.%m.%d")
+        update_env_variable("db_reset_time", today_str)
+        self.lbl_reset_time.setText(today_str)
+        
         self.game_over_widget.set_stats(last_word, last_winner, count)
         self.stacked_widget.setCurrentIndex(1)
         self.countdown_val = 10
