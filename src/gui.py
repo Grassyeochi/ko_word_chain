@@ -74,24 +74,21 @@ class StartupCheckDialog(QDialog):
     def __init__(self, monitor, db_manager):
         super().__init__()
         self.setWindowTitle("시스템 사전 점검")
-        self.resize(400, 250) # 높이 약간 증가
+        self.resize(400, 250) 
         self.monitor = monitor
         self.db = db_manager
         self.all_passed = False
         
         layout = QVBoxLayout()
         
-        # 1-1. 방송 상태 라벨
         self.lbl_stream = QLabel("방송 상태 확인 중...")
         self.lbl_stream.setFont(QFont("NanumBarunGothic", 12))
         layout.addWidget(self.lbl_stream)
         
-        # 1-2. DB 상태 라벨
         self.lbl_db = QLabel("DB 연결 확인 중...")
         self.lbl_db.setFont(QFont("NanumBarunGothic", 12))
         layout.addWidget(self.lbl_db)
 
-        # 1-3. 환경변수 날짜 라벨 (신규)
         self.lbl_env = QLabel("환경변수(날짜) 확인 중...")
         self.lbl_env.setFont(QFont("NanumBarunGothic", 12))
         layout.addWidget(self.lbl_env)
@@ -104,7 +101,6 @@ class StartupCheckDialog(QDialog):
         self.btn_retry = QPushButton("다시 검사")
         self.btn_retry.clicked.connect(self.run_checks)
         
-        # [신규] 무시하고 시작 버튼
         self.btn_ignore = QPushButton("무시하고 시작")
         self.btn_ignore.setStyleSheet("color: orange; font-weight: bold;")
         self.btn_ignore.clicked.connect(self.on_ignore)
@@ -114,7 +110,7 @@ class StartupCheckDialog(QDialog):
         self.btn_next.setEnabled(False)
         
         btn_layout.addWidget(self.btn_retry)
-        btn_layout.addWidget(self.btn_ignore) # 버튼 추가
+        btn_layout.addWidget(self.btn_ignore) 
         btn_layout.addWidget(self.btn_next)
         layout.addLayout(btn_layout)
         
@@ -123,7 +119,6 @@ class StartupCheckDialog(QDialog):
         QTimer.singleShot(500, self.run_checks)
 
     def on_ignore(self):
-        # 검사 결과 상관없이 통과 처리
         self.accept()
 
     def run_checks(self):
@@ -159,7 +154,7 @@ class StartupCheckDialog(QDialog):
             self.lbl_db.setText(f"❌ DB 상태: {msg_db}")
             self.lbl_db.setStyleSheet("color: red; font-weight: bold;")
 
-        # 3. [신규] 환경변수 날짜 체크
+        # 3. 환경변수 날짜 체크
         is_env_ok = False
         env_date_str = os.getenv("db_reset_time")
         
@@ -168,11 +163,11 @@ class StartupCheckDialog(QDialog):
             self.lbl_env.setStyleSheet("color: red; font-weight: bold;")
         else:
             try:
-                # 날짜 파싱 (YYYY.MM.DD)
-                env_date = datetime.strptime(env_date_str, "%Y.%m.%d").date()
-                today = datetime.now().date()
+                # [수정] 날짜 포맷 YYYY.MM.DD HH:MM:SS
+                env_dt = datetime.strptime(env_date_str, "%Y.%m.%d %H:%M:%S")
+                now = datetime.now()
                 
-                if env_date > today:
+                if env_dt > now:
                     self.lbl_env.setText(f"❌ 미래 날짜 감지 ({env_date_str})")
                     self.lbl_env.setStyleSheet("color: red; font-weight: bold;")
                 else:
@@ -186,14 +181,13 @@ class StartupCheckDialog(QDialog):
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
 
-        # 모두 통과해야 다음 버튼 활성화
         if is_live and is_db_ok and is_env_ok:
             self.all_passed = True
             self.btn_next.setEnabled(True)
         else:
             self.all_passed = False
 
-# --- 2. 시작 단어 설정 다이얼로그 (기존 유지) ---
+# --- 2. 시작 단어 설정 다이얼로그 ---
 class StartWordOptionDialog(QDialog):
     def __init__(self):
         super().__init__()
@@ -796,7 +790,8 @@ class ChzzkGameGUI(QWidget):
         self.db_manager.export_all_data_to_csv()
         count = self.db_manager.get_used_word_count()
         
-        today_str = datetime.now().strftime("%Y.%m.%d")
+        # [수정] 게임 종료 시 .env 날짜 저장 포맷 변경
+        today_str = datetime.now().strftime("%Y.%m.%d %H:%M:%S")
         update_env_variable("db_reset_time", today_str)
         self.lbl_reset_time.setText(today_str)
         
