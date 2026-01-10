@@ -161,7 +161,7 @@ class StartupCheckDialog(QDialog):
         else:
             try:
                 env_dt = datetime.strptime(env_date_str, "%Y.%m.%d %H:%M:%S")
-                now = datetime.now()
+                now = datetime.now(ZoneInfo("Asia/Seoul"))
                 
                 if env_dt > now:
                     self.lbl_env.setText(f"❌ 미래 날짜 감지 ({env_date_str})")
