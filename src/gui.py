@@ -136,7 +136,6 @@ class StartupCheckDialog(QDialog):
         QTimer.singleShot(100, self._process_checks)
 
     def _process_checks(self):
-        # 1. 방송 상태 체크
         is_live, msg_live = self.monitor.check_live_status_sync()
         if is_live:
             self.lbl_stream.setText(f"✔ 방송 상태: {msg_live}")
@@ -145,7 +144,6 @@ class StartupCheckDialog(QDialog):
             self.lbl_stream.setText(f"❌ 방송 상태: {msg_live}")
             self.lbl_stream.setStyleSheet("color: red; font-weight: bold;")
 
-        # 2. DB 연결 체크
         is_db_ok, msg_db = self.db.test_db_integrity()
         if is_db_ok:
             self.lbl_db.setText(f"✔ DB 상태: {msg_db}")
@@ -154,7 +152,6 @@ class StartupCheckDialog(QDialog):
             self.lbl_db.setText(f"❌ DB 상태: {msg_db}")
             self.lbl_db.setStyleSheet("color: red; font-weight: bold;")
 
-        # 3. 환경변수 날짜 체크
         is_env_ok = False
         env_date_str = os.getenv("db_reset_time")
         
@@ -163,7 +160,6 @@ class StartupCheckDialog(QDialog):
             self.lbl_env.setStyleSheet("color: red; font-weight: bold;")
         else:
             try:
-                # [수정] 날짜 포맷 YYYY.MM.DD HH:MM:SS
                 env_dt = datetime.strptime(env_date_str, "%Y.%m.%d %H:%M:%S")
                 now = datetime.now()
                 
@@ -340,6 +336,9 @@ class ChzzkGameGUI(QWidget):
         self.email_sent_flag = False
         self.console_window = None
         self.answer_check_enabled = True
+        
+        # [신규] 재부팅 플래그
+        self.is_rebooting = False
 
         self.restart_timer = QTimer(self)
         self.restart_timer.timeout.connect(self.tick_restart_countdown)
@@ -626,14 +625,26 @@ class ChzzkGameGUI(QWidget):
 
     def start_game_logic(self, start_word):
         self.start_time = time.time()
-        
         self.current_word_text = start_word
         
         self.set_responsive_text(start_word)
         self.lbl_current_word.repaint()     
         QApplication.processEvents()        
         
-        self.last_change_time = time.time()
+        # [수정] 재부팅 시 시간 유지를 위한 로직
+        # .env에서 마지막 변경 시간을 로드하여 복원
+        saved_ts = os.getenv("last_word_change_time")
+        if saved_ts:
+            try:
+                self.last_change_time = float(saved_ts)
+            except:
+                self.last_change_time = time.time()
+        else:
+            self.last_change_time = time.time()
+        
+        # 만약 값이 없어서 현재시간으로 세팅되었다면 바로 저장해둠 (초기값)
+        update_env_variable("last_word_change_time", str(self.last_change_time))
+
         self.lbl_last_winner.setText("현재 단어를 맞춘 사람: -")
         self.log_display.clear()
         
@@ -651,6 +662,7 @@ class ChzzkGameGUI(QWidget):
         self.signals.word_detected.connect(self.handle_new_word)
         self.signals.stream_offline.connect(self.handle_stream_offline)
         self.signals.log_request.connect(self.async_log_system)
+        self.signals.gui_log_message.connect(self.log_message)
 
     def handle_stream_offline(self):
         self.async_log_system(10, "Game", "방송 오프라인 감지로 종료")
@@ -663,20 +675,46 @@ class ChzzkGameGUI(QWidget):
             self.lbl_runtime.setText(f"{start_str} - 00:00:00")
             return
 
-        now = time.time()
-        total_elapsed_sec = int(now - self.start_time)
+        now = datetime.now()
+        
+        # [신규] 정기 재부팅 로직 (0, 4, 8, 12, 16, 20시)
+        target_hours = [0, 4, 8, 12, 16, 20]
+        if now.hour in target_hours and now.minute == 0 and 0 <= now.second <= 2:
+            if not self.is_rebooting:
+                self.is_rebooting = True
+                self.perform_reboot()
+
+        # 런타임 표시
+        now_ts = time.time()
+        total_elapsed_sec = int(now_ts - self.start_time)
         total_delta = timedelta(seconds=total_elapsed_sec)
         
         start_str = self.program_start_dt.strftime("%Y.%m.%d %H:%M:%S")
         self.lbl_runtime.setText(f"{start_str} - {str(total_delta)}")
 
-        word_elapsed = now - self.last_change_time
+        # 단어 경과 시간 (재부팅 후에도 복원된 self.last_change_time 사용)
+        word_elapsed = now_ts - self.last_change_time
         self.lbl_word_elapsed.setText(str(timedelta(seconds=int(word_elapsed))))
 
         if word_elapsed > 3600 and not self.email_sent_flag:
             self.email_sent_flag = True
             self.async_log_system(6, "Game", "1시간 경과, 메일 발송 시도")
             threading.Thread(target=self.thread_send_mail).start()
+
+    # [신규] 재부팅 수행 메서드
+    def perform_reboot(self):
+        print("[시스템] 정기 재부팅을 수행합니다...")
+        self.async_log_system(1, "System", "정기 재부팅 수행")
+        
+        # DB 연결 안전하게 종료
+        if self.db_manager.conn:
+            try:
+                self.db_manager.conn.close()
+            except:
+                pass
+        
+        # 프로그램 재시작 (현재 프로세스를 새 프로세스로 교체)
+        os.execl(sys.executable, sys.executable, *sys.argv)
 
     def thread_send_mail(self):
         success, msg = send_alert_email(self.current_word_text)
@@ -747,7 +785,11 @@ class ChzzkGameGUI(QWidget):
 
             self.current_word_text = word
             self.set_responsive_text(word)
+            
+            # [수정] 단어 변경 시 시간 저장
             self.last_change_time = time.time()
+            update_env_variable("last_word_change_time", str(self.last_change_time))
+            
             self.email_sent_flag = False 
             
             current_count = int(self.lbl_word_count.text())
@@ -790,7 +832,6 @@ class ChzzkGameGUI(QWidget):
         self.db_manager.export_all_data_to_csv()
         count = self.db_manager.get_used_word_count()
         
-        # [수정] 게임 종료 시 .env 날짜 저장 포맷 변경
         today_str = datetime.now().strftime("%Y.%m.%d %H:%M:%S")
         update_env_variable("db_reset_time", today_str)
         self.lbl_reset_time.setText(today_str)

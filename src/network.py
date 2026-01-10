@@ -58,7 +58,10 @@ class ChzzkMonitor:
                 token_res = requests.get(token_url).json()
                 access_token = token_res['content']['accessToken']
 
-                async with websockets.connect(self.ws_url) as websocket:
+                # 핑(Ping) 간격 설정 (치지직은 보통 20초, 여유 있게 60초 타임아웃 설정)
+                TIMEOUT_SECONDS = 60.0 
+
+                async with websockets.connect(self.ws_url, ping_interval=None) as websocket:
                     print(f"[시스템] 채팅 서버 연결 성공 (Chat ID: {chat_channel_id})")
                     self.signals.log_request.emit(1, "ChzzkMonitor", "채팅 서버 연결 성공", None)
                     
@@ -69,7 +72,9 @@ class ChzzkMonitor:
 
                     while self.running:
                         try:
-                            res = await websocket.recv()
+                            # [핵심 수정] 60초 동안 아무 데이터도 안 오면 TimeoutError 발생시킴
+                            res = await asyncio.wait_for(websocket.recv(), timeout=TIMEOUT_SECONDS)
+                            
                             data = json.loads(res)
                             cmd = data.get('cmd')
 
@@ -91,7 +96,13 @@ class ChzzkMonitor:
 
                             elif cmd == 0:
                                 await websocket.send(json.dumps({"ver": "2", "cmd": 10000}))
-                                
+                        
+                        except asyncio.TimeoutError:
+                            # 60초간 서버 응답이 없으면 연결 죽은 것으로 간주 -> 재접속 시도
+                            print("[시스템] 60초간 응답 없음. 좀비 연결 감지. 재접속합니다.")
+                            self.signals.log_request.emit(6, "ChzzkMonitor", "연결 타임아웃(좀비 연결), 재접속 시도", None)
+                            break # 내부 루프 탈출 -> 외부 while 루프에서 재접속
+
                         except Exception as e:
                             print(f"[연결 끊김] {e}")
                             self.signals.log_request.emit(8, "ChzzkMonitor", "웹소켓 연결 끊김, 재접속 시도", traceback.format_exc())
