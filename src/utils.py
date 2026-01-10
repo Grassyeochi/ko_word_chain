@@ -4,10 +4,9 @@ import os
 import smtplib
 from email.mime.text import MIMEText
 
-# [신규] .env 파일 업데이트 함수
+# [수정] .env 파일 업데이트 함수 (줄바꿈 안전 처리 추가)
 def update_env_variable(key, value):
     env_path = ".env"
-    # 파일이 없으면 생성
     if not os.path.exists(env_path):
         with open(env_path, "w", encoding="utf-8") as f:
             f.write(f"{key}={value}\n")
@@ -21,12 +20,11 @@ def update_env_variable(key, value):
         key_found = False
         
         for line in lines:
-            # 주석이나 빈 줄은 유지
+            # 주석이나 빈 줄은 유지하되, 내용이 있는 줄은 그대로 둠
             if line.strip().startswith("#") or not line.strip():
                 new_lines.append(line)
                 continue
             
-            # key=value 형태 확인
             if "=" in line:
                 k, v = line.split("=", 1)
                 if k.strip() == key:
@@ -38,6 +36,11 @@ def update_env_variable(key, value):
                 new_lines.append(line)
 
         if not key_found:
+            # [중요] 기존 마지막 줄이 줄바꿈으로 끝나지 않았다면 줄바꿈 추가
+            if new_lines and not new_lines[-1].endswith('\n'):
+                new_lines[-1] += '\n'
+            
+            # 새 변수 추가
             new_lines.append(f"{key}={value}\n")
 
         with open(env_path, "w", encoding="utf-8") as f:
