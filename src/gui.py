@@ -30,7 +30,7 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-# --- 0. 종료 알림 다이얼로그 ---
+# --- 0. 종료 알림 다이얼로그 (변경 없음) ---
 class ShutdownDialog(QDialog):
     def __init__(self):
         super().__init__()
@@ -69,7 +69,7 @@ class ShutdownDialog(QDialog):
         self.lbl_status.setText(text)
         QApplication.processEvents()
 
-# --- 1. 시스템 사전 점검 다이얼로그 ---
+# --- 1. 시스템 사전 점검 다이얼로그 (변경 없음) ---
 class StartupCheckDialog(QDialog):
     def __init__(self, monitor, db_manager):
         super().__init__()
@@ -183,7 +183,7 @@ class StartupCheckDialog(QDialog):
         else:
             self.all_passed = False
 
-# --- 2. 시작 단어 설정 다이얼로그 ---
+# --- 2. 시작 단어 설정 다이얼로그 (변경 없음) ---
 class StartWordOptionDialog(QDialog):
     def __init__(self):
         super().__init__()
@@ -235,7 +235,7 @@ class StartWordOptionDialog(QDialog):
         self.selected_mode = "RECENT"
         self.accept()
 
-# --- 콘솔 윈도우 ---
+# --- 콘솔 윈도우 (변경 없음) ---
 class ConsoleWindow(QWidget):
     def __init__(self, main_window):
         super().__init__()
@@ -268,7 +268,7 @@ class ConsoleWindow(QWidget):
         if result_msg:
             self.log(result_msg)
 
-# --- 게임 종료 화면 위젯 ---
+# --- 게임 종료 화면 위젯 (변경 없음) ---
 class GameOverWidget(QWidget):
     def __init__(self):
         super().__init__()
@@ -337,7 +337,6 @@ class ChzzkGameGUI(QWidget):
         self.console_window = None
         self.answer_check_enabled = True
         
-        # [신규] 재부팅 플래그
         self.is_rebooting = False
 
         self.restart_timer = QTimer(self)
@@ -631,8 +630,6 @@ class ChzzkGameGUI(QWidget):
         self.lbl_current_word.repaint()     
         QApplication.processEvents()        
         
-        # [수정] 재부팅 시 시간 유지를 위한 로직
-        # .env에서 마지막 변경 시간을 로드하여 복원
         saved_ts = os.getenv("last_word_change_time")
         if saved_ts:
             try:
@@ -642,7 +639,6 @@ class ChzzkGameGUI(QWidget):
         else:
             self.last_change_time = time.time()
         
-        # 만약 값이 없어서 현재시간으로 세팅되었다면 바로 저장해둠 (초기값)
         update_env_variable("last_word_change_time", str(self.last_change_time))
 
         self.lbl_last_winner.setText("현재 단어를 맞춘 사람: -")
@@ -677,14 +673,15 @@ class ChzzkGameGUI(QWidget):
 
         now = datetime.now()
         
-        # [신규] 정기 재부팅 로직 (0, 4, 8, 12, 16, 20시)
+        # [수정] 정기 재부팅 로직 (Uptime Check 추가)
         target_hours = [0, 4, 8, 12, 16, 20]
         if now.hour in target_hours and now.minute == 0 and 0 <= now.second <= 2:
-            if not self.is_rebooting:
-                self.is_rebooting = True
-                self.perform_reboot()
+            # 프로그램이 켜진지 60초가 넘었을 때만 재부팅 (무한 루프 방지)
+            if (now - self.program_start_dt).total_seconds() > 60:
+                if not self.is_rebooting:
+                    self.is_rebooting = True
+                    self.perform_reboot()
 
-        # 런타임 표시
         now_ts = time.time()
         total_elapsed_sec = int(now_ts - self.start_time)
         total_delta = timedelta(seconds=total_elapsed_sec)
@@ -692,7 +689,6 @@ class ChzzkGameGUI(QWidget):
         start_str = self.program_start_dt.strftime("%Y.%m.%d %H:%M:%S")
         self.lbl_runtime.setText(f"{start_str} - {str(total_delta)}")
 
-        # 단어 경과 시간 (재부팅 후에도 복원된 self.last_change_time 사용)
         word_elapsed = now_ts - self.last_change_time
         self.lbl_word_elapsed.setText(str(timedelta(seconds=int(word_elapsed))))
 
@@ -701,19 +697,16 @@ class ChzzkGameGUI(QWidget):
             self.async_log_system(6, "Game", "1시간 경과, 메일 발송 시도")
             threading.Thread(target=self.thread_send_mail).start()
 
-    # [신규] 재부팅 수행 메서드
     def perform_reboot(self):
         print("[시스템] 정기 재부팅을 수행합니다...")
         self.async_log_system(1, "System", "정기 재부팅 수행")
         
-        # DB 연결 안전하게 종료
         if self.db_manager.conn:
             try:
                 self.db_manager.conn.close()
             except:
                 pass
         
-        # 프로그램 재시작 (현재 프로세스를 새 프로세스로 교체)
         os.execl(sys.executable, sys.executable, *sys.argv)
 
     def thread_send_mail(self):
@@ -786,7 +779,6 @@ class ChzzkGameGUI(QWidget):
             self.current_word_text = word
             self.set_responsive_text(word)
             
-            # [수정] 단어 변경 시 시간 저장
             self.last_change_time = time.time()
             update_env_variable("last_word_change_time", str(self.last_change_time))
             
