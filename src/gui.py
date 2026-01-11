@@ -7,7 +7,8 @@ import asyncio
 import threading
 import math
 import unicodedata
-import subprocess # [신규] 프로세스 실행을 위해 추가
+import subprocess
+import traceback # [신규] 트레이스백 출력을 위해 추가
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -22,7 +23,8 @@ from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from .signals import GameSignals
 from .database import DatabaseManager
 from .network import ChzzkMonitor
-from .utils import apply_dueum_rule, send_alert_email, ProfanityFilter, update_env_variable
+# [수정] send_crash_report_email 추가
+from .utils import apply_dueum_rule, send_alert_email, ProfanityFilter, update_env_variable, log_unknown_word, handle_violation_alert, send_crash_report_email
 from .commands import CommandManager
 
 def resource_path(relative_path):
@@ -32,7 +34,24 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-# --- 0. 종료 알림 다이얼로그 ---
+# [신규] 전역 예외 처리기 (Global Exception Hook)
+def exception_hook(exctype, value, tb):
+    # 에러 내용을 문자열로 변환
+    error_msg = "".join(traceback.format_exception(exctype, value, tb))
+    print("[CRITICAL] 치명적인 오류 발생!")
+    print(error_msg)
+    
+    # 이메일 발송 (블로킹으로 처리하여 메일이 다 갈 때까지 종료 지연)
+    send_crash_report_email(error_msg)
+    
+    # 원래의 훅을 호출하여 프로그램 종료 (또는 sys.exit(1))
+    sys.__excepthook__(exctype, value, tb)
+
+# 훅 등록
+sys.excepthook = exception_hook
+
+
+# --- 0. 종료 알림 다이얼로그 (변경 없음) ---
 class ShutdownDialog(QDialog):
     def __init__(self):
         super().__init__()
@@ -71,7 +90,7 @@ class ShutdownDialog(QDialog):
         self.lbl_status.setText(text)
         QApplication.processEvents()
 
-# --- 1. 시스템 사전 점검 다이얼로그 ---
+# --- 1. 시스템 사전 점검 다이얼로그 (변경 없음) ---
 class StartupCheckDialog(QDialog):
     def __init__(self, monitor, db_manager):
         super().__init__()
@@ -185,7 +204,7 @@ class StartupCheckDialog(QDialog):
         else:
             self.all_passed = False
 
-# --- 2. 시작 단어 설정 다이얼로그 ---
+# --- 2. 시작 단어 설정 다이얼로그 (변경 없음) ---
 class StartWordOptionDialog(QDialog):
     def __init__(self):
         super().__init__()
@@ -237,7 +256,7 @@ class StartWordOptionDialog(QDialog):
         self.selected_mode = "RECENT"
         self.accept()
 
-# --- 콘솔 윈도우 ---
+# --- 콘솔 윈도우 (변경 없음) ---
 class ConsoleWindow(QWidget):
     def __init__(self, main_window):
         super().__init__()
@@ -270,7 +289,7 @@ class ConsoleWindow(QWidget):
         if result_msg:
             self.log(result_msg)
 
-# --- 게임 종료 화면 위젯 ---
+# --- 게임 종료 화면 위젯 (변경 없음) ---
 class GameOverWidget(QWidget):
     def __init__(self):
         super().__init__()
@@ -720,7 +739,6 @@ class ChzzkGameGUI(QWidget):
             except:
                 pass
         
-        # [수정] PyInstaller EXE 충돌 방지용 (subprocess Popen + exit)
         if getattr(sys, 'frozen', False):
             subprocess.Popen([sys.executable] + sys.argv[1:])
         else:
@@ -823,10 +841,12 @@ class ChzzkGameGUI(QWidget):
         elif result_status == "unavailable":
             self.async_log_history(nickname, word, self.current_word_text, "Fail", "부적절한 단어 입력")
             self.log_message(f"[실패] {nickname}: {word} (사전에 없는 단어입니다)") 
+            threading.Thread(target=handle_violation_alert, args=(nickname, word)).start()
 
         elif result_status == "not_found":
             self.async_log_history(nickname, word, self.current_word_text, "Fail", "사전에 없는 단어")
             self.log_message(f"[실패] {nickname}: {word} (사전에 없는 단어입니다)")
+            threading.Thread(target=log_unknown_word, args=(word,)).start()
             
         elif result_status == "used":
             self.async_log_history(nickname, word, self.current_word_text, "Fail", "이미 사용됨")

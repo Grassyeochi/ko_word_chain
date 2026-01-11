@@ -3,8 +3,9 @@ import re
 import os
 import smtplib
 from email.mime.text import MIMEText
+from datetime import datetime
 
-# [수정] .env 파일 업데이트 함수 (줄바꿈 안전 처리 추가)
+# .env 파일 업데이트 함수 (기존과 동일)
 def update_env_variable(key, value):
     env_path = ".env"
     if not os.path.exists(env_path):
@@ -20,7 +21,6 @@ def update_env_variable(key, value):
         key_found = False
         
         for line in lines:
-            # 주석이나 빈 줄은 유지하되, 내용이 있는 줄은 그대로 둠
             if line.strip().startswith("#") or not line.strip():
                 new_lines.append(line)
                 continue
@@ -36,11 +36,8 @@ def update_env_variable(key, value):
                 new_lines.append(line)
 
         if not key_found:
-            # [중요] 기존 마지막 줄이 줄바꿈으로 끝나지 않았다면 줄바꿈 추가
             if new_lines and not new_lines[-1].endswith('\n'):
                 new_lines[-1] += '\n'
-            
-            # 새 변수 추가
             new_lines.append(f"{key}={value}\n")
 
         with open(env_path, "w", encoding="utf-8") as f:
@@ -49,6 +46,99 @@ def update_env_variable(key, value):
     except Exception as e:
         print(f"[시스템] .env 업데이트 실패: {e}")
 
+# DB에 없는 단어 기록 (기존과 동일)
+def log_unknown_word(word):
+    file_path = "unknown_words.txt"
+    try:
+        with open(file_path, "a", encoding="utf-8") as f:
+            f.write(f"{word}\n")
+    except Exception as e:
+        print(f"[오류] 없는 단어 기록 실패: {e}")
+
+# 부적절한 단어 경고 메일 (기존과 동일)
+def handle_violation_alert(nickname, word):
+    record_file = "violation_users.txt"
+    
+    if os.path.exists(record_file):
+        try:
+            with open(record_file, "r", encoding="utf-8") as f:
+                sent_users = [line.strip() for line in f.readlines()]
+                if nickname in sent_users:
+                    return False
+        except Exception:
+            pass
+
+    smtp_server = os.getenv("MAIL_SERVER", "smtp.naver.com")
+    smtp_port = int(os.getenv("MAIL_PORT", 465))
+    sender = os.getenv("MAIL_SENDER")
+    password = os.getenv("MAIL_PASSWORD")
+    receiver = os.getenv("MAIL_RECEIVER")
+
+    if not (sender and password and receiver):
+        return False
+
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    try:
+        msg = MIMEText(f"다음 사용자가 부적절한 단어를 사용했습니다.\n\n"
+                       f"- 닉네임: {nickname}\n"
+                       f"- 입력 단어: {word}\n"
+                       f"- 감지 시간: {current_time}\n")
+        
+        msg['Subject'] = f"[경고] 부적절한 단어 사용 감지 ({nickname})"
+        msg['From'] = sender
+        msg['To'] = receiver
+
+        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+            server.login(sender, password)
+            server.send_message(msg)
+        
+        try:
+            with open(record_file, "a", encoding="utf-8") as f:
+                f.write(f"{nickname}\n")
+        except:
+            pass
+            
+        return True
+
+    except Exception as e:
+        print(f"[오류] 경고 메일 발송 실패: {e}")
+        return False
+
+# [신규] 치명적 오류(Crash) 리포트 메일 발송
+def send_crash_report_email(error_log):
+    smtp_server = os.getenv("MAIL_SERVER", "smtp.naver.com")
+    smtp_port = int(os.getenv("MAIL_PORT", 465))
+    sender = os.getenv("MAIL_SENDER")
+    password = os.getenv("MAIL_PASSWORD")
+    receiver = os.getenv("MAIL_RECEIVER")
+
+    if not (sender and password and receiver):
+        print("[Utils] 메일 설정 누락으로 크래시 리포트 발송 실패")
+        return False
+
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    try:
+        msg = MIMEText(f"프로그램이 치명적인 오류로 인해 비정상 종료되었습니다.\n\n"
+                       f"- 발생 시간: {current_time}\n"
+                       f"- 오류 내용:\n{error_log}")
+        
+        msg['Subject'] = "[긴급] 프로그램 비정상 종료 (Crash Report)"
+        msg['From'] = sender
+        msg['To'] = receiver
+
+        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+            server.login(sender, password)
+            server.send_message(msg)
+        
+        print("[시스템] 관리자에게 크래시 리포트 메일을 발송했습니다.")
+        return True
+    except Exception as e:
+        print(f"[오류] 크래시 리포트 발송 실패: {e}")
+        return False
+
+# ... (ProfanityFilter, apply_dueum_rule, send_alert_email 클래스 및 함수들은 기존과 동일하게 유지) ...
 class ProfanityFilter:
     def __init__(self, filepath="bad_words.txt"):
         self.bad_words = set()
