@@ -697,6 +697,10 @@ class ChzzkGameGUI(QWidget):
 
     def handle_stream_offline(self):
         self.async_log_system(10, "Game", "방송 오프라인 감지로 종료")
+        
+        # [수정] 종료 전 데이터 백업 시도
+        self.db_manager.export_all_data_to_csv()
+        
         QMessageBox.critical(self, "연결 실패", "현재 방송이 시작되지 않았습니다.\n방송을 켠 후 다시 실행해주세요.")
         sys.exit()
 
@@ -734,6 +738,9 @@ class ChzzkGameGUI(QWidget):
         print("[시스템] 정기 재부팅을 수행합니다...")
         self.async_log_system(1, "System", "정기 재부팅 수행")
         
+        # [수정] 재부팅 전 데이터 백업
+        self.db_manager.export_all_data_to_csv()
+
         update_env_variable("auto_reboot_flag", "true")
         
         if self.db_manager.conn:
