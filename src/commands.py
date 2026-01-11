@@ -9,170 +9,95 @@ class CommandManager:
 
     def execute(self, full_command: str) -> str:
         parts = full_command.strip().split()
-        if not parts:
-            return ""
-
+        if not parts: return ""
         cmd = parts[0].lower()
         args = parts[1:]
 
-        if cmd == "chcw":
-            return self._handle_chcw(args, full_command)
-        elif cmd == "random": 
-            return self._handle_random()
-        elif cmd == "rwt":
-            return self._handle_rwt()
-        elif cmd == "restart":
-            return self._handle_restart()
-        elif cmd == "ac":
-            return self._handle_ac(args)
-        elif cmd == "log":
-            return self._handle_log(args)
-        else:
-            return f"[오류] 알 수 없는 명령어입니다: {cmd}"
+        if cmd == "chcw": return self._handle_chcw(full_command)
+        elif cmd == "random": return self._handle_random()
+        elif cmd == "rwt": return self._handle_rwt()
+        elif cmd == "restart": return self._handle_restart()
+        elif cmd == "ac": return self._handle_ac(args)
+        elif cmd == "log": return self._handle_log(args)
+        else: return f"[오류] 알 수 없는 명령어: {cmd}"
 
-    def _handle_chcw(self, args, full_command):
-        if len(args) < 1:
-             return "[오류] 사용법: chcw \"단어\""
-        
-        target_word = full_command[len("chcw"):].strip().replace('"', '').replace("'", "")
-        
-        if not target_word:
-            return "[오류] 단어를 입력해주세요."
+    def _handle_chcw(self, full_command):
+        # 명령어 파싱
+        try:
+            target_word = full_command[len("chcw"):].strip().replace('"', '').replace("'", "")
+        except:
+            return "[오류] 파싱 실패"
+            
+        if not target_word: return "[오류] 단어를 입력하세요."
 
         admin_nick = "console-admin"
-        
         if self.db.admin_force_use_word(target_word, admin_nick):
             self.gui.current_word_text = target_word
             self.gui.set_responsive_text(target_word)
             self.gui.last_change_time = time.time()
             self.gui.email_sent_flag = False
-            
             self.gui.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: {admin_nick}")
             self.gui.update_hint(target_word[-1])
-            
-            msg = f"[관리자] 단어가 '{target_word}'(으)로 강제 변경되었습니다."
+            msg = f"[관리자] 단어가 '{target_word}'(으)로 변경됨."
             self.gui.log_message(msg)
-
-            next_starts = apply_dueum_rule(target_word[-1])
-            any_left = False
-            for char in next_starts:
-                if not self.db.check_remaining_words(char):
-                    any_left = True
-                    break
-            
-            if not any_left:
-                self.gui.process_game_over(target_word, admin_nick)
-                return f"[성공] {msg} (이후 게임 종료됨)"
-            
             return f"[성공] {msg}"
         else:
-            return f"[실패] 단어 '{target_word}'를 DB에서 찾을 수 없습니다."
+            return f"[실패] 단어 '{target_word}' DB 없음."
 
     def _handle_random(self):
         admin_nick = "console-random"
-        
         new_word = self.db.get_and_use_random_available_word(admin_nick)
+        if not new_word: return "[실패] 남은 단어 없음."
         
-        if not new_word:
-            return "[실패] 사용할 수 있는 남은 단어가 DB에 없습니다."
-
         self.gui.current_word_text = new_word
         self.gui.set_responsive_text(new_word)
         self.gui.last_change_time = time.time()
         self.gui.email_sent_flag = False
-        
         self.gui.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: {admin_nick}")
         self.gui.update_hint(new_word[-1])
-        
-        msg = f"[관리자] 단어가 무작위 단어 '{new_word}'(으)로 변경되었습니다."
+        msg = f"[관리자] 무작위 단어 '{new_word}'(으)로 변경됨."
         self.gui.log_message(msg)
-
-        next_starts = apply_dueum_rule(new_word[-1])
-        any_left = False
-        for char in next_starts:
-            if not self.db.check_remaining_words(char):
-                any_left = True
-                break
-        
-        if not any_left:
-            self.gui.process_game_over(new_word, admin_nick)
-            return f"[성공] {msg} (이후 게임 종료됨)"
-        
         return f"[성공] {msg}"
 
     def _handle_rwt(self):
         self.gui.last_change_time = time.time()
         self.gui.update_runtime()
         self.gui.email_sent_flag = False
-        
-        msg = "[관리자] 단어 경과 시간이 초기화되었습니다."
+        msg = "[관리자] 시간 초기화됨."
         self.gui.log_message(msg)
         return f"[성공] {msg}"
 
     def _handle_restart(self):
-        msg = "[관리자] 게임 강제 재시작을 요청했습니다."
+        msg = "[관리자] 게임 강제 재시작."
         self.gui.log_message(msg)
         self.gui.process_game_over(self.gui.current_word_text, "console-admin")
         return f"[성공] {msg}"
 
     def _handle_ac(self, args):
-        if len(args) < 1:
-            return "[오류] 사용법: ac start 또는 ac stop"
-        
+        if not args: return "[오류] ac start/stop"
         action = args[0].lower()
         if action == "stop":
             self.gui.answer_check_enabled = False
             self.gui.lbl_pause_status.show()
-            
-            msg = "[관리자] 정답 체크가 중지되었습니다."
-            self.gui.log_message(msg)
-            return f"[알림] {msg}"
-            
+            self.gui.log_message("[관리자] 정답 체크 중지.")
+            return "[알림] 중지됨"
         elif action == "start":
             self.gui.answer_check_enabled = True
             self.gui.lbl_pause_status.hide()
-            
-            msg = "[관리자] 정답 체크가 다시 시작되었습니다."
-            self.gui.log_message(msg)
-            return f"[알림] {msg}"
-        else:
-            return "[오류] ac 명령어 뒤에는 start 또는 stop만 가능합니다."
+            self.gui.log_message("[관리자] 정답 체크 시작.")
+            return "[알림] 시작됨"
+        return "[오류] ac start 또는 ac stop"
 
     def _handle_log(self, args):
-        if len(args) < 1:
-            return "[오류] 사용법: log all (숫자) / log game (숫자) / log save"
-        
-        sub_cmd = args[0].lower()
-        
-        if sub_cmd == "save":
-            success, timestamp = self.db.export_all_data_to_csv()
-            if success:
-                msg = f"[성공] 로그 저장 완료 (backups/{timestamp})"
-                self.gui.log_message(msg)
-                return msg
-            else:
-                return "[실패] 로그 저장 중 오류가 발생했습니다."
-        
-        elif sub_cmd in ["all", "game"]:
+        if not args: return "[오류] log save/all/game"
+        sub = args[0].lower()
+        if sub == "save":
+            suc, ts = self.db.export_all_data_to_csv()
+            return f"[성공] 백업 완료: {ts}" if suc else "[실패] 백업 오류"
+        elif sub in ["all", "game"]:
             try:
-                limit = int(args[1]) if len(args) > 1 else 10
-                logs = self.db.get_recent_logs(sub_cmd, limit)
-                
-                if not logs:
-                    return "[알림] 로그가 없거나 조회에 실패했습니다."
-                
-                output = [f"--- [Log View: {sub_cmd}, Limit: {limit}] ---"]
-                for row in logs:
-                    output.append(str(row))
-                output.append("---------------------------------------")
-                
-                return "\n".join(output)
-
-            except ValueError:
-                return "[오류] 숫자는 정수로 입력해주세요."
-            except AttributeError:
-                return "[오류] DB 메서드(get_recent_logs)를 찾을 수 없습니다."
-            except Exception as e:
-                return f"[시스템 오류] {str(e)}"
-        else:
-            return "[오류] 알 수 없는 log 옵션입니다."
+                lim = int(args[1]) if len(args)>1 else 10
+                logs = self.db.get_recent_logs(sub, lim)
+                return "\n".join([str(r) for r in logs])
+            except: return "[오류] 조회 실패"
+        return "[오류] 알 수 없는 옵션"

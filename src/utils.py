@@ -2,51 +2,61 @@
 import re
 import os
 import smtplib
+import threading
 from email.mime.text import MIMEText
 from datetime import datetime
 
-# .env 파일 업데이트 함수 (기존과 동일)
+# [신규] 파일 접근 경합 방지용 락
+file_lock = threading.Lock()
+
 def update_env_variable(key, value):
     env_path = ".env"
-    if not os.path.exists(env_path):
-        with open(env_path, "w", encoding="utf-8") as f:
-            f.write(f"{key}={value}\n")
-        return
+    
+    # [수정] 파일 I/O 전체를 Lock으로 보호
+    with file_lock:
+        if not os.path.exists(env_path):
+            try:
+                with open(env_path, "w", encoding="utf-8") as f:
+                    f.write(f"{key}={value}\n")
+            except Exception as e:
+                print(f"[시스템] .env 생성 실패: {e}")
+            return
 
-    try:
-        with open(env_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
 
-        new_lines = []
-        key_found = False
-        
-        for line in lines:
-            if line.strip().startswith("#") or not line.strip():
-                new_lines.append(line)
-                continue
+            new_lines = []
+            key_found = False
             
-            if "=" in line:
-                k, v = line.split("=", 1)
-                if k.strip() == key:
-                    new_lines.append(f"{key}={value}\n")
-                    key_found = True
+            for line in lines:
+                if line.strip().startswith("#") or not line.strip():
+                    new_lines.append(line)
+                    continue
+                
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    if k.strip() == key:
+                        new_lines.append(f"{key}={value}\n")
+                        key_found = True
+                    else:
+                        new_lines.append(line)
                 else:
                     new_lines.append(line)
-            else:
-                new_lines.append(line)
 
-        if not key_found:
-            if new_lines and not new_lines[-1].endswith('\n'):
-                new_lines[-1] += '\n'
-            new_lines.append(f"{key}={value}\n")
+            if not key_found:
+                if new_lines and not new_lines[-1].endswith('\n'):
+                    new_lines[-1] += '\n'
+                new_lines.append(f"{key}={value}\n")
 
-        with open(env_path, "w", encoding="utf-8") as f:
-            f.writelines(new_lines)
-            
-    except Exception as e:
-        print(f"[시스템] .env 업데이트 실패: {e}")
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+                
+        except Exception as e:
+            print(f"[시스템] .env 업데이트 실패: {e}")
 
-# DB에 없는 단어 기록 (기존과 동일)
+# ... (이하 기존 함수들은 동일) ...
+
 def log_unknown_word(word):
     file_path = "unknown_words.txt"
     try:
@@ -55,10 +65,8 @@ def log_unknown_word(word):
     except Exception as e:
         print(f"[오류] 없는 단어 기록 실패: {e}")
 
-# 부적절한 단어 경고 메일 (기존과 동일)
 def handle_violation_alert(nickname, word):
     record_file = "violation_users.txt"
-    
     if os.path.exists(record_file):
         try:
             with open(record_file, "r", encoding="utf-8") as f:
@@ -98,14 +106,11 @@ def handle_violation_alert(nickname, word):
                 f.write(f"{nickname}\n")
         except:
             pass
-            
         return True
-
     except Exception as e:
         print(f"[오류] 경고 메일 발송 실패: {e}")
         return False
 
-# [신규] 치명적 오류(Crash) 리포트 메일 발송
 def send_crash_report_email(error_log):
     smtp_server = os.getenv("MAIL_SERVER", "smtp.naver.com")
     smtp_port = int(os.getenv("MAIL_PORT", 465))
@@ -138,7 +143,6 @@ def send_crash_report_email(error_log):
         print(f"[오류] 크래시 리포트 발송 실패: {e}")
         return False
 
-# ... (ProfanityFilter, apply_dueum_rule, send_alert_email 클래스 및 함수들은 기존과 동일하게 유지) ...
 class ProfanityFilter:
     def __init__(self, filepath="bad_words.txt"):
         self.bad_words = set()

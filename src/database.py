@@ -19,6 +19,12 @@ class DatabaseManager:
 
     def connect(self):
         try:
+            if self.conn:
+                try:
+                    self.conn.close()
+                except:
+                    pass
+            
             self.conn = pymysql.connect(
                 host=self.host,
                 user=self.user,
@@ -27,20 +33,24 @@ class DatabaseManager:
                 port=self.port,
                 charset='utf8mb4',
                 autocommit=True,
-                cursorclass=pymysql.cursors.Cursor
+                cursorclass=pymysql.cursors.Cursor,
+                connect_timeout=10 # 타임아웃 설정
             )
             print(f"[시스템] DB 연결 성공 (Database: {self.db_name})")
         except Exception as e:
             print(f"[오류] DB 연결 실패: {e}")
+            self.conn = None
 
     def _ensure_connection(self):
-        if not self.conn:
+        # [수정] 단순 ping 대신 연결 유효성 검사 및 재연결 강화
+        if self.conn is None:
             self.connect()
             return
+
         try:
-            self.conn.ping(reconnect=True)
-        except Exception as e:
-            print(f"[시스템] DB 재연결 시도 중 오류: {e}")
+            self.conn.ping(reconnect=False) # ping은 가볍게 체크만
+        except Exception:
+            print("[시스템] DB 연결 끊김 감지, 재연결 시도...")
             self.connect()
 
     def check_and_use_word(self, word, nickname):
@@ -55,25 +65,20 @@ class DatabaseManager:
                     cursor.execute(sql_check, (word,))
                     result = cursor.fetchone()
 
-                    # 1. DB에 없는 경우
                     if not result: 
                         return "not_found"
 
                     pk_num, is_use, can_use, available = result
 
-                    # 2. DB에 있으나 available이 False인 경우 (GUI엔 없는 단어로 위장)
                     if not available:
                         return "unavailable"
 
-                    # 3. 이미 사용된 경우
                     if is_use: 
                         return "used"
 
-                    # 4. 한방 단어인 경우
                     if not can_use: 
                         return "forbidden"
 
-                    # 5. 정상 사용 처리
                     sql_update = """
                         UPDATE ko_word 
                         SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s
@@ -82,9 +87,12 @@ class DatabaseManager:
                     affected = cursor.execute(sql_update, (nickname, pk_num))
                     return "success" if affected > 0 else "used"
 
+            except pymysql.OperationalError:
+                # 연결 문제 발생 시 한 번 더 재시도 기회 부여
+                self.connect()
+                return "error"
             except Exception as e:
                 print(f"[오류] 단어 검증 에러: {e}")
-                self.conn.rollback()
                 return "error"
     
     def get_used_word_count(self):
@@ -120,7 +128,7 @@ class DatabaseManager:
             if not self.conn: return False, "DB 연결 실패"
             try:
                 with self.conn.cursor() as cursor:
-                    sql = "SELECT word FROM ko_word WHERE word = '치지직' AND available = TRUE AND can_use = TRUE"
+                    sql = "SELECT 1" # 간단한 쿼리로 변경
                     cursor.execute(sql)
                     return True, "정상 응답"
             except Exception as e:
@@ -149,6 +157,8 @@ class DatabaseManager:
             if not self.conn: return None
             try:
                 with self.conn.cursor() as cursor:
+                    # ORDER BY RAND()는 성능 이슈가 있으나, 데이터 구조를 모르는 상태에서는 유지하되
+                    # DB 부하를 줄이기 위해 Lock 안에서 빠르게 처리
                     sql_select = """
                         SELECT num, word FROM ko_word 
                         WHERE is_use = FALSE 
@@ -216,10 +226,10 @@ class DatabaseManager:
             if not self.conn: return False
             try:
                 with self.conn.cursor() as cursor:
-                    sql = "SELECT COUNT(*) FROM ko_word WHERE start_char = %s AND is_use = FALSE AND can_use = TRUE AND available = TRUE"
+                    sql = "SELECT count(*) FROM ko_word WHERE start_char = %s AND is_use = FALSE AND can_use = TRUE AND available = TRUE"
                     cursor.execute(sql, (start_char,))
                     count = cursor.fetchone()[0]
-                    return count == 0
+                    return count > 0 # 남은게 있으면 True
             except Exception as e:
                 print(f"[오류] 남은 단어 확인 에러: {e}")
                 return False
@@ -274,6 +284,7 @@ class DatabaseManager:
             if not os.path.exists(backup_dir): os.makedirs(backup_dir)
             tables = ["ko_word", "app_logs", "game_history"]
             try:
+                if not self.conn: return False, None
                 with self.conn.cursor() as cursor:
                     for table in tables:
                         sql = f"SELECT * FROM {table}"

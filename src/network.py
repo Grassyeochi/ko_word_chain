@@ -5,6 +5,7 @@ import requests
 import websockets
 import traceback
 import asyncio
+from functools import partial
 from .signals import GameSignals
 
 class ChzzkMonitor:
@@ -14,7 +15,14 @@ class ChzzkMonitor:
         self.signals = signals
         self.running = True
 
+    # [신규] 동기 HTTP 요청을 비동기로 래핑하는 헬퍼 함수
+    async def _async_get(self, url):
+        loop = asyncio.get_running_loop()
+        # requests.get을 별도 스레드풀에서 실행
+        return await loop.run_in_executor(None, partial(requests.get, url, timeout=5))
+
     def check_live_status_sync(self):
+        # 시작 시 점검용 (동기 방식 유지)
         if not self.channel_id:
             return False, "Channel ID 누락"
         
@@ -43,10 +51,14 @@ class ChzzkMonitor:
         while self.running:
             try:
                 status_url = f"https://api.chzzk.naver.com/polling/v2/channels/{self.channel_id}/live-status"
-                res = requests.get(status_url).json()
-                content = res.get('content', {})
                 
+                # [수정] 비동기 Executor로 실행 (Blocking 방지)
+                res_obj = await self._async_get(status_url)
+                res = res_obj.json()
+                
+                content = res.get('content', {})
                 live_status = content.get('status')
+                
                 if live_status != 'OPEN':
                     print(f"[시스템] 방송 종료됨 (상태: {live_status}). 10초 후 재확인...")
                     self.signals.stream_offline.emit()
@@ -55,11 +67,15 @@ class ChzzkMonitor:
 
                 chat_channel_id = content['chatChannelId']
                 token_url = f"https://comm-api.game.naver.com/nng_main/v1/chats/access-token?channelId={chat_channel_id}&chatType=STREAMING"
-                token_res = requests.get(token_url).json()
+                
+                # [수정] 비동기 Executor로 실행
+                token_res_obj = await self._async_get(token_url)
+                token_res = token_res_obj.json()
+                
                 access_token = token_res['content']['accessToken']
-
-                # [수정] 타임아웃 시간을 60초 -> 600초(10분)로 대폭 증가
-                TIMEOUT_SECONDS = 600.0
+                
+                # 환경변수에서 타임아웃 가져오기 (기본값 600초)
+                TIMEOUT_SECONDS = float(os.getenv("WS_TIMEOUT", 600.0))
 
                 async with websockets.connect(self.ws_url, ping_interval=None) as websocket:
                     print(f"[시스템] 채팅 서버 연결 성공 (Chat ID: {chat_channel_id})")
@@ -72,7 +88,7 @@ class ChzzkMonitor:
 
                     while self.running:
                         try:
-                            # 600초(10분) 동안 아무 데이터도 안 오면 TimeoutError 발생
+                            # 10분(설정값) 동안 응답 없으면 TimeoutError
                             res = await asyncio.wait_for(websocket.recv(), timeout=TIMEOUT_SECONDS)
                             
                             data = json.loads(res)
@@ -98,8 +114,8 @@ class ChzzkMonitor:
                                 await websocket.send(json.dumps({"ver": "2", "cmd": 10000}))
                         
                         except asyncio.TimeoutError:
-                            print("[시스템] 10분간 응답 없음. 좀비 연결 감지. 재접속합니다.")
-                            self.signals.log_request.emit(6, "ChzzkMonitor", "좀비 연결(Timeout 10m) 재접속 시도", None)
+                            print("[시스템] 장시간 응답 없음(Zombie Connection). 재접속 시도.")
+                            self.signals.log_request.emit(6, "ChzzkMonitor", "좀비 연결(Timeout) 재접속 시도", None)
                             self.signals.gui_log_message.emit("[시스템] 채팅 서버 재연결 중...")
                             break 
 
