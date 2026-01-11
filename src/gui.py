@@ -8,9 +8,10 @@ import threading
 import math
 import unicodedata
 import subprocess
-import traceback # [신규] 트레이스백 출력을 위해 추가
+import traceback
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+# [수정] ZoneInfo 임포트 삭제
+# from zoneinfo import ZoneInfo 
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QFrame, QSizePolicy, QMessageBox, QGridLayout,
@@ -23,7 +24,6 @@ from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from .signals import GameSignals
 from .database import DatabaseManager
 from .network import ChzzkMonitor
-# [수정] send_crash_report_email 추가
 from .utils import apply_dueum_rule, send_alert_email, ProfanityFilter, update_env_variable, log_unknown_word, handle_violation_alert, send_crash_report_email
 from .commands import CommandManager
 
@@ -34,20 +34,14 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-# [신규] 전역 예외 처리기 (Global Exception Hook)
+# 전역 예외 처리기 (Global Exception Hook)
 def exception_hook(exctype, value, tb):
-    # 에러 내용을 문자열로 변환
     error_msg = "".join(traceback.format_exception(exctype, value, tb))
     print("[CRITICAL] 치명적인 오류 발생!")
     print(error_msg)
-    
-    # 이메일 발송 (블로킹으로 처리하여 메일이 다 갈 때까지 종료 지연)
     send_crash_report_email(error_msg)
-    
-    # 원래의 훅을 호출하여 프로그램 종료 (또는 sys.exit(1))
     sys.__excepthook__(exctype, value, tb)
 
-# 훅 등록
 sys.excepthook = exception_hook
 
 
@@ -347,7 +341,8 @@ class ChzzkGameGUI(QWidget):
         self.profanity_filter = ProfanityFilter()
         
         self.start_time = None 
-        self.program_start_dt = datetime.now(ZoneInfo("Asia/Seoul")) 
+        # [수정] ZoneInfo 대신 시스템 시간 사용
+        self.program_start_dt = datetime.now() 
         self.last_change_time = time.time()
         self.current_word_text = ""
         
@@ -699,15 +694,18 @@ class ChzzkGameGUI(QWidget):
 
     def update_runtime(self):
         if self.start_time is None:
+            # [수정] ZoneInfo 삭제 -> 시스템 시간 기준
             start_str = self.program_start_dt.strftime("%Y.%m.%d %H:%M:%S")
             self.lbl_runtime.setText(f"{start_str} - 00:00:00")
             return
 
-        now = datetime.now(ZoneInfo("Asia/Seoul"))
+        # [수정] ZoneInfo 삭제 -> 시스템 시간 기준
+        now = datetime.now()
         
         target_hours = [0, 4, 8, 12, 16, 20]
         if now.hour in target_hours and now.minute == 0 and 0 <= now.second <= 2:
-            if (datetime.now(ZoneInfo("Asia/Seoul")) - self.program_start_dt).total_seconds() > 60:
+            # [수정] ZoneInfo 삭제 -> 시스템 시간 기준
+            if (datetime.now() - self.program_start_dt).total_seconds() > 60:
                 if not self.is_rebooting:
                     self.is_rebooting = True
                     self.perform_reboot()
@@ -863,7 +861,8 @@ class ChzzkGameGUI(QWidget):
         self.db_manager.export_all_data_to_csv()
         count = self.db_manager.get_used_word_count()
         
-        today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y.%m.%d %H:%M:%S")
+        # [수정] ZoneInfo 삭제 -> 시스템 시간 기준
+        today_str = datetime.now().strftime("%Y.%m.%d %H:%M:%S")
         update_env_variable("db_reset_time", today_str)
         self.lbl_reset_time.setText(today_str)
         
