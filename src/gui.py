@@ -7,8 +7,9 @@ import asyncio
 import threading
 import math
 import unicodedata
+import subprocess # [신규] 프로세스 실행을 위해 추가
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo # [신규] 타임존 모듈 추가
+from zoneinfo import ZoneInfo
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QFrame, QSizePolicy, QMessageBox, QGridLayout,
@@ -31,7 +32,7 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-# --- 0. 종료 알림 다이얼로그 (변경 없음) ---
+# --- 0. 종료 알림 다이얼로그 ---
 class ShutdownDialog(QDialog):
     def __init__(self):
         super().__init__()
@@ -70,7 +71,7 @@ class ShutdownDialog(QDialog):
         self.lbl_status.setText(text)
         QApplication.processEvents()
 
-# --- 1. 시스템 사전 점검 다이얼로그 (변경 없음) ---
+# --- 1. 시스템 사전 점검 다이얼로그 ---
 class StartupCheckDialog(QDialog):
     def __init__(self, monitor, db_manager):
         super().__init__()
@@ -162,9 +163,7 @@ class StartupCheckDialog(QDialog):
         else:
             try:
                 env_dt = datetime.strptime(env_date_str, "%Y.%m.%d %H:%M:%S")
-                # [수정] 날짜 비교 시 현재 시간도 KST 기준인지 확인 필요하지만, 
-                # .env 파싱은 단순 값 비교이므로 datetime.now() 유지해도 무방하나 통일성 위해 수정 가능
-                now = datetime.now() 
+                now = datetime.now()
                 
                 if env_dt > now:
                     self.lbl_env.setText(f"❌ 미래 날짜 감지 ({env_date_str})")
@@ -186,7 +185,7 @@ class StartupCheckDialog(QDialog):
         else:
             self.all_passed = False
 
-# --- 2. 시작 단어 설정 다이얼로그 (변경 없음) ---
+# --- 2. 시작 단어 설정 다이얼로그 ---
 class StartWordOptionDialog(QDialog):
     def __init__(self):
         super().__init__()
@@ -238,7 +237,7 @@ class StartWordOptionDialog(QDialog):
         self.selected_mode = "RECENT"
         self.accept()
 
-# --- 콘솔 윈도우 (변경 없음) ---
+# --- 콘솔 윈도우 ---
 class ConsoleWindow(QWidget):
     def __init__(self, main_window):
         super().__init__()
@@ -271,7 +270,7 @@ class ConsoleWindow(QWidget):
         if result_msg:
             self.log(result_msg)
 
-# --- 게임 종료 화면 위젯 (변경 없음) ---
+# --- 게임 종료 화면 위젯 ---
 class GameOverWidget(QWidget):
     def __init__(self):
         super().__init__()
@@ -329,7 +328,6 @@ class ChzzkGameGUI(QWidget):
         self.profanity_filter = ProfanityFilter()
         
         self.start_time = None 
-        # [수정] 시작 시간도 KST 기준
         self.program_start_dt = datetime.now(ZoneInfo("Asia/Seoul")) 
         self.last_change_time = time.time()
         self.current_word_text = ""
@@ -686,12 +684,10 @@ class ChzzkGameGUI(QWidget):
             self.lbl_runtime.setText(f"{start_str} - 00:00:00")
             return
 
-        # [수정] 강제 KST 기준 시간
         now = datetime.now(ZoneInfo("Asia/Seoul"))
         
         target_hours = [0, 4, 8, 12, 16, 20]
         if now.hour in target_hours and now.minute == 0 and 0 <= now.second <= 2:
-            # 안전장치: 프로그램 가동 1분 경과 확인
             if (datetime.now(ZoneInfo("Asia/Seoul")) - self.program_start_dt).total_seconds() > 60:
                 if not self.is_rebooting:
                     self.is_rebooting = True
@@ -724,7 +720,13 @@ class ChzzkGameGUI(QWidget):
             except:
                 pass
         
-        os.execl(sys.executable, sys.executable, *sys.argv)
+        # [수정] PyInstaller EXE 충돌 방지용 (subprocess Popen + exit)
+        if getattr(sys, 'frozen', False):
+            subprocess.Popen([sys.executable] + sys.argv[1:])
+        else:
+            subprocess.Popen([sys.executable] + sys.argv)
+        
+        sys.exit()
 
     def thread_send_mail(self):
         success, msg = send_alert_email(self.current_word_text)
@@ -841,7 +843,6 @@ class ChzzkGameGUI(QWidget):
         self.db_manager.export_all_data_to_csv()
         count = self.db_manager.get_used_word_count()
         
-        # [수정] 강제 KST 기준
         today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y.%m.%d %H:%M:%S")
         update_env_variable("db_reset_time", today_str)
         self.lbl_reset_time.setText(today_str)
@@ -862,6 +863,5 @@ class ChzzkGameGUI(QWidget):
     def restart_game_auto(self):
         self.db_manager.reset_all_tables()
         start_word = self.db_manager.get_random_start_word()
-        # [수정] 게임 종료 후 재시작은 새로운 게임이므로 시간 초기화 (False)
         self.start_game_logic(start_word, restore_time=False)
         self.stacked_widget.setCurrentIndex(0)
