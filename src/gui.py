@@ -754,10 +754,17 @@ class ChzzkGameGUI(QWidget):
             except:
                 pass
         
+        # [수정] 환경변수 정화 (SSL 인증서 경로 초기화)
+        new_env = os.environ.copy()
+        new_env.pop("REQUESTS_CA_BUNDLE", None)
+        new_env.pop("SSL_CERT_FILE", None)
+
         if getattr(sys, 'frozen', False):
-            subprocess.Popen([sys.executable] + sys.argv[1:])
+            # PyInstaller 환경
+            subprocess.Popen([sys.executable] + sys.argv[1:], env=new_env)
         else:
-            subprocess.Popen([sys.executable] + sys.argv)
+            # Python 스크립트 환경
+            subprocess.Popen([sys.executable] + sys.argv, env=new_env)
         
         sys.exit()
 
