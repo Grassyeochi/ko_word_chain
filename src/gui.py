@@ -347,7 +347,7 @@ class ChzzkGameGUI(QWidget):
         self.profanity_filter = ProfanityFilter()
         
         self.start_time = None 
-        # [수정] ZoneInfo 오류 해결 -> 시스템 시간 사용
+        # 시스템 시간 사용
         self.program_start_dt = datetime.now() 
         self.last_change_time = time.time()
         self.current_word_text = ""
@@ -661,18 +661,23 @@ class ChzzkGameGUI(QWidget):
         QApplication.processEvents()        
         
         if restore_time:
-            saved_ts = os.getenv("last_word_change_time")
-            if saved_ts:
+            saved_str = os.getenv("last_word_change_time")
+            # [수정] 불러올 때 날짜 형식(YYYY.MM.DD HH:MM:SS)을 파싱하여 타임스탬프로 변환
+            if saved_str:
                 try:
-                    self.last_change_time = float(saved_ts)
-                except:
+                    dt = datetime.strptime(saved_str, "%Y.%m.%d %H:%M:%S")
+                    self.last_change_time = dt.timestamp()
+                except ValueError:
+                    # 형식 불일치 시 현재 시간으로 리셋
                     self.last_change_time = time.time()
             else:
                 self.last_change_time = time.time()
         else:
             self.last_change_time = time.time()
         
-        update_env_variable("last_word_change_time", str(self.last_change_time))
+        # [수정] 저장할 때 날짜 형식(YYYY.MM.DD HH:MM:SS)으로 변환
+        curr_dt_str = datetime.fromtimestamp(self.last_change_time).strftime("%Y.%m.%d %H:%M:%S")
+        update_env_variable("last_word_change_time", curr_dt_str)
 
         self.lbl_last_winner.setText("현재 단어를 맞춘 사람: -")
         self.log_display.clear()
@@ -692,13 +697,13 @@ class ChzzkGameGUI(QWidget):
         self.signals.stream_offline.connect(self.handle_stream_offline)
         self.signals.log_request.connect(self.async_log_system)
         self.signals.gui_log_message.connect(self.log_message)
-        # [신규] DB 결과 처리 시그널 연결 (스레드 -> GUI)
+        # DB 결과 처리 시그널 연결 (스레드 -> GUI)
         self.signals.game_check_result.connect(self.on_word_check_finished)
 
     def handle_stream_offline(self):
         self.async_log_system(10, "Game", "방송 오프라인 감지로 종료")
         
-        # [수정] 종료 전 데이터 백업 시도
+        # 종료 전 데이터 백업 시도
         self.db_manager.export_all_data_to_csv()
         
         QMessageBox.critical(self, "연결 실패", "현재 방송이 시작되지 않았습니다.\n방송을 켠 후 다시 실행해주세요.")
@@ -738,7 +743,7 @@ class ChzzkGameGUI(QWidget):
         print("[시스템] 정기 재부팅을 수행합니다...")
         self.async_log_system(1, "System", "정기 재부팅 수행")
         
-        # [수정] 재부팅 전 데이터 백업
+        # 재부팅 전 데이터 백업
         self.db_manager.export_all_data_to_csv()
 
         update_env_variable("auto_reboot_flag", "true")
@@ -782,7 +787,7 @@ class ChzzkGameGUI(QWidget):
             self.player.stop()
         self.player.play()
 
-    # [수정] 메인 로직: GUI Freezing 및 입력 중복 방지를 위해 스레드 사용
+    # 메인 로직: GUI Freezing 및 입력 중복 방지를 위해 스레드 사용
     def handle_new_word(self, nickname, word):
         if self.input_locked: return
         if self.stacked_widget.currentIndex() == 1: return
@@ -814,13 +819,13 @@ class ChzzkGameGUI(QWidget):
                 self.log_message(f"[실패] {nickname}: {word} (초성 불일치)")
                 return
 
-        # [수정] 스레드 실행 전 먼저 잠금 (Input Spamming 방지)
+        # 스레드 실행 전 먼저 잠금 (Input Spamming 방지)
         self.input_locked = True
         
         # 3. DB 검증 및 게임 오버 체크 (GUI Freezing 방지를 위해 스레드 생성)
         threading.Thread(target=self._bg_check_word, args=(word, nickname)).start()
 
-    # [신규] 백그라운드 스레드에서 실행되는 함수
+    # 백그라운드 스레드에서 실행되는 함수
     def _bg_check_word(self, word, nickname):
         # 1. 단어 사용 검증 (DB)
         result = self.db_manager.check_and_use_word(word, nickname)
@@ -839,7 +844,7 @@ class ChzzkGameGUI(QWidget):
         
         self.signals.game_check_result.emit(result, nickname, word, is_game_over)
 
-    # [신규] 시그널을 받아 UI를 업데이트하는 함수
+    # 시그널을 받아 UI를 업데이트하는 함수
     def on_word_check_finished(self, result_status, nickname, word, is_game_over):
         if result_status == "success":
             # 성공 시에는 1초 쿨다운 후 잠금 해제
@@ -854,7 +859,9 @@ class ChzzkGameGUI(QWidget):
             self.set_responsive_text(word)
             
             self.last_change_time = time.time()
-            update_env_variable("last_word_change_time", str(self.last_change_time))
+            # [수정] 저장할 때 날짜 형식(YYYY.MM.DD HH:MM:SS)으로 변환
+            curr_dt_str = datetime.fromtimestamp(self.last_change_time).strftime("%Y.%m.%d %H:%M:%S")
+            update_env_variable("last_word_change_time", curr_dt_str)
             
             self.email_sent_flag = False 
             
@@ -869,7 +876,7 @@ class ChzzkGameGUI(QWidget):
                 self.process_game_over(word, nickname)
 
         else:
-            # [중요] 실패 시에는 즉시 잠금 해제하여 다시 입력 가능하게 함
+            # 실패 시에는 즉시 잠금 해제하여 다시 입력 가능하게 함
             self.input_locked = False
 
             if result_status == "unavailable":
