@@ -37,6 +37,7 @@ def exception_hook(exctype, value, tb):
     error_msg = "".join(traceback.format_exception(exctype, value, tb))
     print("[CRITICAL] 치명적인 오류 발생!")
     print(error_msg)
+    # 셧다운 중 발생한 오류는 메일 발송 제외 가능성 고려 (선택사항)
     send_crash_report_email(error_msg)
     sys.__excepthook__(exctype, value, tb)
 
@@ -754,10 +755,21 @@ class ChzzkGameGUI(QWidget):
             except:
                 pass
         
-        # [수정] 환경변수 정화 (SSL 인증서 경로 초기화)
+        # [핵심 수정] 환경변수 정화 (SSL 인증서 경로 초기화 + DLL 로드 경로 정리)
         new_env = os.environ.copy()
         new_env.pop("REQUESTS_CA_BUNDLE", None)
         new_env.pop("SSL_CERT_FILE", None)
+
+        # PyInstaller 환경에서 재시작 시, 현재 실행 중인 임시 폴더(_MEI) 경로를 PATH에서 제거
+        if getattr(sys, 'frozen', False):
+            try:
+                current_mei = sys._MEIPASS
+                path_list = new_env.get('PATH', '').split(os.pathsep)
+                # 현재 실행 중인 임시 폴더 경로를 필터링하여 제거
+                new_path_list = [p for p in path_list if current_mei not in p]
+                new_env['PATH'] = os.pathsep.join(new_path_list)
+            except Exception as e:
+                print(f"[시스템] PATH 정리 중 오류: {e}")
 
         if getattr(sys, 'frozen', False):
             # PyInstaller 환경
