@@ -15,14 +15,11 @@ class ChzzkMonitor:
         self.signals = signals
         self.running = True
 
-    # [신규] 동기 HTTP 요청을 비동기로 래핑하는 헬퍼 함수
     async def _async_get(self, url):
         loop = asyncio.get_running_loop()
-        # requests.get을 별도 스레드풀에서 실행
         return await loop.run_in_executor(None, partial(requests.get, url, timeout=5))
 
     def check_live_status_sync(self):
-        # 시작 시 점검용 (동기 방식 유지)
         if not self.channel_id:
             return False, "Channel ID 누락"
         
@@ -52,7 +49,6 @@ class ChzzkMonitor:
             try:
                 status_url = f"https://api.chzzk.naver.com/polling/v2/channels/{self.channel_id}/live-status"
                 
-                # [수정] 비동기 Executor로 실행 (Blocking 방지)
                 res_obj = await self._async_get(status_url)
                 res = res_obj.json()
                 
@@ -68,13 +64,11 @@ class ChzzkMonitor:
                 chat_channel_id = content['chatChannelId']
                 token_url = f"https://comm-api.game.naver.com/nng_main/v1/chats/access-token?channelId={chat_channel_id}&chatType=STREAMING"
                 
-                # [수정] 비동기 Executor로 실행
                 token_res_obj = await self._async_get(token_url)
                 token_res = token_res_obj.json()
                 
                 access_token = token_res['content']['accessToken']
                 
-                # 환경변수에서 타임아웃 가져오기 (기본값 600초)
                 TIMEOUT_SECONDS = float(os.getenv("WS_TIMEOUT", 600.0))
 
                 async with websockets.connect(self.ws_url, ping_interval=None) as websocket:
@@ -88,7 +82,6 @@ class ChzzkMonitor:
 
                     while self.running:
                         try:
-                            # 10분(설정값) 동안 응답 없으면 TimeoutError
                             res = await asyncio.wait_for(websocket.recv(), timeout=TIMEOUT_SECONDS)
                             
                             data = json.loads(res)

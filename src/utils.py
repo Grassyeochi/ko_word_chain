@@ -6,13 +6,10 @@ import threading
 from email.mime.text import MIMEText
 from datetime import datetime
 
-# [신규] 파일 접근 경합 방지용 락
 file_lock = threading.Lock()
 
 def update_env_variable(key, value):
     env_path = ".env"
-    
-    # [수정] 파일 I/O 전체를 Lock으로 보호
     with file_lock:
         if not os.path.exists(env_path):
             try:
@@ -54,8 +51,6 @@ def update_env_variable(key, value):
                 
         except Exception as e:
             print(f"[시스템] .env 업데이트 실패: {e}")
-
-# ... (이하 기존 함수들은 동일) ...
 
 def log_unknown_word(word):
     file_path = "unknown_words.txt"
@@ -185,7 +180,7 @@ def apply_dueum_rule(char):
     jongsung_idx = base_code % 28
 
     y_sounds = [2, 3, 6, 7, 12, 17, 20] 
-    dual_sounds = [18] 
+    dual_sounds = [4, 18] # 'ㅓ', 'ㅡ' (런->넌,언 포함)
 
     variations = [char]
     target_chosungs = []

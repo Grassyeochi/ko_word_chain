@@ -21,3 +21,5 @@ ChzzkWordChain.spec
 
 dist
 build
+
+test.py

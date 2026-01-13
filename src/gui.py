@@ -7,7 +7,6 @@ import asyncio
 import threading
 import math
 import unicodedata
-import subprocess
 import traceback 
 from datetime import datetime, timedelta
 
@@ -37,8 +36,9 @@ def exception_hook(exctype, value, tb):
     error_msg = "".join(traceback.format_exception(exctype, value, tb))
     print("[CRITICAL] 치명적인 오류 발생!")
     print(error_msg)
-    # 셧다운 중 발생한 오류는 메일 발송 제외 가능성 고려 (선택사항)
-    send_crash_report_email(error_msg)
+    # 시스템 종료(SystemExit)가 아닌 경우에만 크래시 리포트 발송
+    if not issubclass(exctype, SystemExit):
+        send_crash_report_email(error_msg)
     sys.__excepthook__(exctype, value, tb)
 
 sys.excepthook = exception_hook
@@ -89,7 +89,7 @@ class StartupCheckDialog(QDialog):
     def __init__(self, monitor, db_manager):
         super().__init__()
         self.setWindowTitle("시스템 사전 점검")
-        self.resize(400, 250) 
+        self.resize(500, 250)
         self.monitor = monitor
         self.db = db_manager
         self.all_passed = False
@@ -360,8 +360,6 @@ class ChzzkGameGUI(QWidget):
         self.console_window = None
         self.answer_check_enabled = True
         
-        self.is_rebooting = False
-
         self.restart_timer = QTimer(self)
         self.restart_timer.timeout.connect(self.tick_restart_countdown)
         self.countdown_val = 10
@@ -380,14 +378,7 @@ class ChzzkGameGUI(QWidget):
         asyncio.get_event_loop().create_task(self.monitor.run())
 
     def run_startup_sequence(self):
-        auto_flag = os.getenv("auto_reboot_flag")
-        if auto_flag == "true":
-            update_env_variable("auto_reboot_flag", "false")
-            start_word = self.db_manager.get_last_used_word()
-            self.start_monitor_service()
-            self.start_game_logic(start_word, restore_time=True)
-            return
-
+        # [삭제됨] auto_reboot_flag 체크 로직 삭제 -> 무조건 점검 다이얼로그 표시
         check_dlg = StartupCheckDialog(self.monitor, self.db_manager)
         if check_dlg.exec() != QDialog.DialogCode.Accepted:
             sys.exit() 
@@ -663,20 +654,17 @@ class ChzzkGameGUI(QWidget):
         
         if restore_time:
             saved_str = os.getenv("last_word_change_time")
-            # [수정] 불러올 때 날짜 형식(YYYY.MM.DD HH:MM:SS)을 파싱하여 타임스탬프로 변환
             if saved_str:
                 try:
                     dt = datetime.strptime(saved_str, "%Y.%m.%d %H:%M:%S")
                     self.last_change_time = dt.timestamp()
                 except ValueError:
-                    # 형식 불일치 시 현재 시간으로 리셋
                     self.last_change_time = time.time()
             else:
                 self.last_change_time = time.time()
         else:
             self.last_change_time = time.time()
         
-        # [수정] 저장할 때 날짜 형식(YYYY.MM.DD HH:MM:SS)으로 변환
         curr_dt_str = datetime.fromtimestamp(self.last_change_time).strftime("%Y.%m.%d %H:%M:%S")
         update_env_variable("last_word_change_time", curr_dt_str)
 
@@ -716,14 +704,7 @@ class ChzzkGameGUI(QWidget):
             self.lbl_runtime.setText(f"{start_str} - 00:00:00")
             return
 
-        now = datetime.now()
-        
-        target_hours = [0, 4, 8, 12, 16, 20]
-        if now.hour in target_hours and now.minute == 0 and 0 <= now.second <= 2:
-            if (datetime.now() - self.program_start_dt).total_seconds() > 60:
-                if not self.is_rebooting:
-                    self.is_rebooting = True
-                    self.perform_reboot()
+        # [삭제됨] 정기 재부팅 시간 체크 및 perform_reboot 호출 로직 삭제
 
         now_ts = time.time()
         total_elapsed_sec = int(now_ts - self.start_time)
@@ -739,46 +720,6 @@ class ChzzkGameGUI(QWidget):
             self.email_sent_flag = True
             self.async_log_system(6, "Game", "1시간 경과, 메일 발송 시도")
             threading.Thread(target=self.thread_send_mail).start()
-
-    def perform_reboot(self):
-        print("[시스템] 정기 재부팅을 수행합니다...")
-        self.async_log_system(1, "System", "정기 재부팅 수행")
-        
-        # 재부팅 전 데이터 백업
-        self.db_manager.export_all_data_to_csv()
-
-        update_env_variable("auto_reboot_flag", "true")
-        
-        if self.db_manager.conn:
-            try:
-                self.db_manager.conn.close()
-            except:
-                pass
-        
-        # [핵심 수정] 환경변수 정화 (SSL 인증서 경로 초기화 + DLL 로드 경로 정리)
-        new_env = os.environ.copy()
-        new_env.pop("REQUESTS_CA_BUNDLE", None)
-        new_env.pop("SSL_CERT_FILE", None)
-
-        # PyInstaller 환경에서 재시작 시, 현재 실행 중인 임시 폴더(_MEI) 경로를 PATH에서 제거
-        if getattr(sys, 'frozen', False):
-            try:
-                current_mei = sys._MEIPASS
-                path_list = new_env.get('PATH', '').split(os.pathsep)
-                # 현재 실행 중인 임시 폴더 경로를 필터링하여 제거
-                new_path_list = [p for p in path_list if current_mei not in p]
-                new_env['PATH'] = os.pathsep.join(new_path_list)
-            except Exception as e:
-                print(f"[시스템] PATH 정리 중 오류: {e}")
-
-        if getattr(sys, 'frozen', False):
-            # PyInstaller 환경
-            subprocess.Popen([sys.executable] + sys.argv[1:], env=new_env)
-        else:
-            # Python 스크립트 환경
-            subprocess.Popen([sys.executable] + sys.argv, env=new_env)
-        
-        sys.exit()
 
     def thread_send_mail(self):
         success, msg = send_alert_email(self.current_word_text)
@@ -878,7 +819,6 @@ class ChzzkGameGUI(QWidget):
             self.set_responsive_text(word)
             
             self.last_change_time = time.time()
-            # [수정] 저장할 때 날짜 형식(YYYY.MM.DD HH:MM:SS)으로 변환
             curr_dt_str = datetime.fromtimestamp(self.last_change_time).strftime("%Y.%m.%d %H:%M:%S")
             update_env_variable("last_word_change_time", curr_dt_str)
             

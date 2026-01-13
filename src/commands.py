@@ -22,7 +22,6 @@ class CommandManager:
         else: return f"[오류] 알 수 없는 명령어: {cmd}"
 
     def _handle_chcw(self, full_command):
-        # 명령어 파싱
         try:
             target_word = full_command[len("chcw"):].strip().replace('"', '').replace("'", "")
         except:

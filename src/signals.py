@@ -14,6 +14,6 @@ class GameSignals(QObject):
     # 시스템 -> GUI: 화면 로그 출력
     gui_log_message = pyqtSignal(str)
     
-    # [신규] 백그라운드 스레드 -> GUI: 단어 검증 결과 전달
+    # 백그라운드 스레드 -> GUI: 단어 검증 결과 전달
     # 인자: result_status(str), nickname(str), word(str), is_game_over(bool)
     game_check_result = pyqtSignal(str, str, str, bool)
