@@ -45,6 +45,7 @@ class ChzzkMonitor:
             self.signals.log_request.emit(10, "ChzzkMonitor", "환경변수 CHZZK_CHANNEL_ID 누락", None)
             return
 
+        # [핵심] 무한 루프: 방송이 종료되어도 프로세스를 죽이지 않고 계속 재시도
         while self.running:
             try:
                 status_url = f"https://api.chzzk.naver.com/polling/v2/channels/{self.channel_id}/live-status"
@@ -55,9 +56,10 @@ class ChzzkMonitor:
                 content = res.get('content', {})
                 live_status = content.get('status')
                 
+                # 방송이 OPEN이 아니면 GUI에 알리고 10초 대기
                 if live_status != 'OPEN':
-                    print(f"[시스템] 방송 종료됨 (상태: {live_status}). 10초 후 재확인...")
-                    self.signals.stream_offline.emit()
+                    print(f"[시스템] 방송 상태: {live_status}. 10초 후 재접속 시도...")
+                    self.signals.stream_offline.emit() # GUI를 대기 모드로 전환
                     await asyncio.sleep(10)
                     continue
 
@@ -74,6 +76,9 @@ class ChzzkMonitor:
                 async with websockets.connect(self.ws_url, ping_interval=None) as websocket:
                     print(f"[시스템] 채팅 서버 연결 성공 (Chat ID: {chat_channel_id})")
                     self.signals.log_request.emit(1, "ChzzkMonitor", "채팅 서버 연결 성공", None)
+                    
+                    # [신규] 연결 성공 시그널 발송 (GUI 복구용)
+                    self.signals.stream_connected.emit()
                     
                     await websocket.send(json.dumps({
                         "ver": "2", "cmd": 100, "svcid": "game", "cid": chat_channel_id, "tid": 1,
@@ -120,6 +125,10 @@ class ChzzkMonitor:
             except Exception as e:
                 print(f"[접속 오류] {e}")
                 self.signals.log_request.emit(9, "ChzzkMonitor", "접속 시도 중 오류", traceback.format_exc())
+                # 접속 오류 시에도 10초 대기 후 재시도
+                self.signals.stream_offline.emit()
+                await asyncio.sleep(10)
+                continue
             
             if self.running:
                 print("[시스템] 3초 후 재연결을 시도합니다...")

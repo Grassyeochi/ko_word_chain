@@ -36,7 +36,6 @@ def exception_hook(exctype, value, tb):
     error_msg = "".join(traceback.format_exception(exctype, value, tb))
     print("[CRITICAL] 치명적인 오류 발생!")
     print(error_msg)
-    # 시스템 종료(SystemExit)가 아닌 경우에만 크래시 리포트 발송
     if not issubclass(exctype, SystemExit):
         send_crash_report_email(error_msg)
     sys.__excepthook__(exctype, value, tb)
@@ -153,14 +152,16 @@ class StartupCheckDialog(QDialog):
     def _process_checks(self):
         is_live, msg_live = self.monitor.check_live_status_sync()
         style_ok = "color: green; font-weight: bold;"
+        style_warn = "color: orange; font-weight: bold;" # 방송 꺼짐은 경고(진행 가능)
         style_no = "color: red; font-weight: bold;"
         
+        # [수정] 방송이 꺼져있어도 진행은 가능하게 변경 (메인 화면에서 대기)
         if is_live:
             self.lbl_stream.setText(f"✔ 방송 상태: {msg_live}")
             self.lbl_stream.setStyleSheet(style_ok)
         else:
-            self.lbl_stream.setText(f"❌ 방송 상태: {msg_live}")
-            self.lbl_stream.setStyleSheet(style_no)
+            self.lbl_stream.setText(f"⚠ 방송 상태: {msg_live} (자동 재접속 대기)")
+            self.lbl_stream.setStyleSheet(style_warn)
 
         is_db_ok, msg_db = self.db.test_db_integrity()
         if is_db_ok:
@@ -195,7 +196,8 @@ class StartupCheckDialog(QDialog):
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
 
-        if is_live and is_db_ok and is_env_ok:
+        # [수정] 방송 상태(is_live)가 False여도 DB와 환경변수가 정상이면 진행 버튼 활성화
+        if is_db_ok and is_env_ok:
             self.all_passed = True
             self.btn_next.setEnabled(True)
         else:
@@ -352,6 +354,7 @@ class ChzzkGameGUI(QWidget):
         self.program_start_dt = datetime.now() 
         self.last_change_time = time.time()
         self.current_word_text = ""
+        self.is_connected = True # [신규] 연결 상태 추적
         
         self.db_reset_date = os.getenv("db_reset_time", "알 수 없음")
         
@@ -378,7 +381,6 @@ class ChzzkGameGUI(QWidget):
         asyncio.get_event_loop().create_task(self.monitor.run())
 
     def run_startup_sequence(self):
-        # [삭제됨] auto_reboot_flag 체크 로직 삭제 -> 무조건 점검 다이얼로그 표시
         check_dlg = StartupCheckDialog(self.monitor, self.db_manager)
         if check_dlg.exec() != QDialog.DialogCode.Accepted:
             sys.exit() 
@@ -684,27 +686,45 @@ class ChzzkGameGUI(QWidget):
     def setup_connections(self):
         self.signals.word_detected.connect(self.handle_new_word)
         self.signals.stream_offline.connect(self.handle_stream_offline)
+        self.signals.stream_connected.connect(self.handle_stream_connected) # [신규] 연결 복구 시그널
         self.signals.log_request.connect(self.async_log_system)
         self.signals.gui_log_message.connect(self.log_message)
         # DB 결과 처리 시그널 연결 (스레드 -> GUI)
         self.signals.game_check_result.connect(self.on_word_check_finished)
 
     def handle_stream_offline(self):
-        self.async_log_system(10, "Game", "방송 오프라인 감지로 종료")
+        # [수정] 종료하지 않고 대기 모드로 전환
+        self.is_connected = False
+        self.async_log_system(10, "Game", "방송 오프라인 감지. 재접속 대기 중...")
         
-        # 종료 전 데이터 백업 시도
-        self.db_manager.export_all_data_to_csv()
+        # UI 업데이트
+        self.lbl_current_word.setText("방송 대기 중...")
+        self.lbl_current_word.setStyleSheet("color: orange; font-size: 50px;")
         
-        QMessageBox.critical(self, "연결 실패", "현재 방송이 시작되지 않았습니다.\n방송을 켠 후 다시 실행해주세요.")
-        sys.exit()
+        self.log_message("[시스템] 방송이 종료되었거나 연결할 수 없습니다.")
+        self.log_message("[시스템] 10초 후에 재접속을 시도합니다...")
+
+        # 정답 입력 일시 중지 (선택 사항)
+        # self.answer_check_enabled = False 
+
+    def handle_stream_connected(self):
+        # [신규] 연결 복구 시 처리
+        if not self.is_connected:
+            self.is_connected = True
+            self.log_message("[시스템] 방송에 다시 연결되었습니다!")
+            self.async_log_system(1, "Game", "방송 재접속 성공")
+            
+            # UI 복구
+            self.lbl_current_word.setStyleSheet("color: white;")
+            self.set_responsive_text(self.current_word_text)
+            
+            # self.answer_check_enabled = True
 
     def update_runtime(self):
         if self.start_time is None:
             start_str = self.program_start_dt.strftime("%Y.%m.%d %H:%M:%S")
             self.lbl_runtime.setText(f"{start_str} - 00:00:00")
             return
-
-        # [삭제됨] 정기 재부팅 시간 체크 및 perform_reboot 호출 로직 삭제
 
         now_ts = time.time()
         total_elapsed_sec = int(now_ts - self.start_time)

@@ -5,8 +5,11 @@ class GameSignals(QObject):
     # 네트워크 -> GUI: 채팅 감지
     word_detected = pyqtSignal(str, str)         
     
-    # 네트워크 -> GUI: 방송 종료 감지
-    stream_offline = pyqtSignal()                
+    # 네트워크 -> GUI: 방송 종료 감지 (재접속 대기 모드 진입용)
+    stream_offline = pyqtSignal()
+
+    # [신규] 네트워크 -> GUI: 방송/채팅 서버 연결 성공 (대기 모드 해제용)
+    stream_connected = pyqtSignal()
     
     # 시스템 -> DB: 로그 저장 요청 (Level, Source, Message, Trace)
     log_request = pyqtSignal(int, str, str, str)
