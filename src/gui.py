@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QFrame, QSizePolicy, QMessageBox, QGridLayout,
                              QPushButton, QTextEdit, QLineEdit, QStackedWidget,
                              QDialog, QProgressBar, QApplication)
-from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QFont, QCloseEvent
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 
@@ -69,8 +69,10 @@ class ShutdownDialog(QDialog):
         self.lbl_status.setText(text)
         QApplication.processEvents()
 
-# --- 1. 시스템 사전 점검 다이얼로그 ---
+# --- 1. 시스템 사전 점검 다이얼로그 ("무시하고 시작" 삭제됨) ---
 class StartupCheckDialog(QDialog):
+    check_finished_signal = pyqtSignal(bool, str, bool, str, bool, str)
+
     def __init__(self, chzzk_monitor, youtube_monitor, db_manager):
         super().__init__()
         self.setWindowTitle("시스템 사전 점검")
@@ -79,10 +81,11 @@ class StartupCheckDialog(QDialog):
         self.youtube = youtube_monitor
         self.db = db_manager
         
-        # [신규] 활성화 여부 저장용 플래그
         self.use_chzzk = False
         self.use_youtube = False
         
+        self.check_finished_signal.connect(self._on_check_finished)
+
         layout = QVBoxLayout()
         
         self.lbl_chzzk = QLabel("치지직 확인 중...")
@@ -105,36 +108,41 @@ class StartupCheckDialog(QDialog):
         self.btn_retry = QPushButton("다시 검사")
         self.btn_retry.clicked.connect(self.run_checks)
         
-        self.btn_ignore = QPushButton("무시하고 시작")
-        self.btn_ignore.setStyleSheet("color: orange; font-weight: bold;")
-        self.btn_ignore.clicked.connect(self.accept)
+        # [삭제됨] "무시하고 시작" 버튼 제거
 
         self.btn_next = QPushButton("다음 단계로")
         self.btn_next.clicked.connect(self.accept)
-        self.btn_next.setEnabled(False)
+        self.btn_next.setEnabled(False) # 검사 통과 전까지 비활성화
         
         btn_layout.addWidget(self.btn_retry)
-        btn_layout.addWidget(self.btn_ignore) 
         btn_layout.addWidget(self.btn_next)
         layout.addLayout(btn_layout)
         
         self.setLayout(layout)
-        QTimer.singleShot(500, self.run_checks)
+        QTimer.singleShot(100, self.run_checks)
 
     def run_checks(self):
         self.progress.setRange(0, 0)
         self.btn_next.setEnabled(False)
         self.lbl_chzzk.setText("치지직 확인 중...")
         self.lbl_yt.setText("유튜브 확인 중...")
-        QTimer.singleShot(100, self._process_checks)
+        self.lbl_chzzk.setStyleSheet("color: black;")
+        self.lbl_yt.setStyleSheet("color: black;")
+        
+        threading.Thread(target=self._check_logic_thread, daemon=True).start()
 
-    def _process_checks(self):
+    def _check_logic_thread(self):
+        chzzk_ok, chzzk_msg = self.chzzk.check_live_status_sync()
+        yt_ok, yt_msg = self.youtube.check_live_status_sync()
+        is_db_ok, msg_db = self.db.test_db_integrity()
+        
+        self.check_finished_signal.emit(chzzk_ok, chzzk_msg, yt_ok, yt_msg, is_db_ok, msg_db)
+
+    def _on_check_finished(self, chzzk_ok, chzzk_msg, yt_ok, yt_msg, is_db_ok, msg_db):
         style_ok = "color: green; font-weight: bold;"
-        style_warn = "color: orange; font-weight: bold;"
         style_no = "color: red; font-weight: bold;"
         
-        # 1. 치지직 상태 확인
-        chzzk_ok, chzzk_msg = self.chzzk.check_live_status_sync()
+        # 1. 치지직
         if chzzk_ok:
             self.lbl_chzzk.setText(f"✔ 치지직: {chzzk_msg}")
             self.lbl_chzzk.setStyleSheet(style_ok)
@@ -144,8 +152,7 @@ class StartupCheckDialog(QDialog):
             self.lbl_chzzk.setStyleSheet(style_no)
             self.use_chzzk = False
 
-        # 2. 유튜브 상태 확인
-        yt_ok, yt_msg = self.youtube.check_live_status_sync()
+        # 2. 유튜브
         if yt_ok:
             self.lbl_yt.setText(f"✔ 유튜브: {yt_msg}")
             self.lbl_yt.setStyleSheet(style_ok)
@@ -155,8 +162,7 @@ class StartupCheckDialog(QDialog):
             self.lbl_yt.setStyleSheet(style_no)
             self.use_youtube = False
 
-        # 3. DB 체크
-        is_db_ok, msg_db = self.db.test_db_integrity()
+        # 3. DB
         if is_db_ok:
             self.lbl_db.setText(f"✔ DB 상태: {msg_db}")
             self.lbl_db.setStyleSheet(style_ok)
@@ -167,11 +173,12 @@ class StartupCheckDialog(QDialog):
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
 
-        # [요구사항 1] 한 쪽만이라도 정상이고 DB가 정상이면 실행 가능
+        # [필수 조건] DB가 정상이고, 적어도 하나의 플랫폼이 켜져 있어야 진행 가능
         if is_db_ok and (self.use_chzzk or self.use_youtube):
             self.btn_next.setEnabled(True)
 
-# --- 2. 시작 단어 설정 다이얼로그 (변경 없음) ---
+
+# --- 2. 시작 단어 설정 다이얼로그 ---
 class StartWordOptionDialog(QDialog):
     def __init__(self):
         super().__init__()
@@ -212,7 +219,7 @@ class StartWordOptionDialog(QDialog):
         self.selected_mode = "RECENT"
         self.accept()
 
-# --- 콘솔 윈도우 (변경 없음) ---
+# --- 콘솔 윈도우 ---
 class ConsoleWindow(QWidget):
     def __init__(self, main_window):
         super().__init__()
@@ -241,7 +248,7 @@ class ConsoleWindow(QWidget):
         result_msg = self.main_window.command_manager.execute(cmd_full)
         if result_msg: self.log(result_msg)
 
-# --- 게임 종료 화면 위젯 (변경 없음) ---
+# --- 게임 종료 화면 위젯 ---
 class GameOverWidget(QWidget):
     def __init__(self):
         super().__init__()
@@ -300,11 +307,10 @@ class ChzzkGameGUI(QWidget):
         self.last_change_time = time.time()
         self.current_word_text = ""
         
-        # [신규] 활성화된 플랫폼과 현재 연결 상태 관리
         self.use_chzzk = False
         self.use_youtube = False
-        self.platform_status = {} # {'치지직': False, '유튜브': False}
-        self.is_global_offline = False # 모든 활성 플랫폼이 끊겼는지 여부
+        self.platform_status = {}
+        self.is_global_offline = False
 
         self.db_reset_date = os.getenv("db_reset_time", "알 수 없음")
         self.input_locked = False
@@ -327,10 +333,9 @@ class ChzzkGameGUI(QWidget):
 
     def start_monitor_service(self):
         loop = asyncio.get_event_loop()
-        # [요구사항 2] 활성화된 플랫폼만 모니터링 시작
         if self.use_chzzk:
             loop.create_task(self.chzzk_monitor.run())
-            self.platform_status['치지직'] = False # 초기값 False (연결되면 True)
+            self.platform_status['치지직'] = False 
         
         if self.use_youtube:
             loop.create_task(self.youtube_monitor.run())
@@ -341,7 +346,6 @@ class ChzzkGameGUI(QWidget):
         if check_dlg.exec() != QDialog.DialogCode.Accepted:
             sys.exit() 
         
-        # [요구사항 1, 2] 점검 결과 받아오기
         self.use_chzzk = check_dlg.use_chzzk
         self.use_youtube = check_dlg.use_youtube
 
@@ -594,18 +598,15 @@ class ChzzkGameGUI(QWidget):
         self.signals.game_check_result.connect(self.on_word_check_finished)
 
     def handle_stream_offline(self, platform_name):
-        # [요구사항 3, 4] 연결 끊김 처리 로직 강화
         if platform_name in self.platform_status:
             self.platform_status[platform_name] = False
         
-        # 활성화된 모든 플랫폼이 끊겼는지 확인
         active_platforms = [p for p in self.platform_status.keys()]
-        if not active_platforms: return # Should not happen
+        if not active_platforms: return 
 
         any_alive = any(self.platform_status.values())
 
         if not any_alive:
-            # [요구사항 4] 모든 플랫폼 접속 끊김 -> 전체 대기 모드
             if not self.is_global_offline:
                 self.is_global_offline = True
                 self.async_log_system(10, "Game", "모든 방송 연결 끊김. 대기 모드 진입.")
@@ -613,7 +614,6 @@ class ChzzkGameGUI(QWidget):
                 self.lbl_current_word.setStyleSheet("color: orange; font-size: 50px;")
                 self.log_message("[시스템] 모든 방송 연결이 끊겼습니다. 재접속 대기 중...")
         else:
-            # [요구사항 3] 일부만 끊김 -> 해당 플랫폼만 로그 출력하고 게임 계속
             self.log_message(f"[시스템] {platform_name} 연결 불안정. 재접속 시도 중...")
 
     def handle_stream_connected(self, platform_name):
@@ -622,7 +622,6 @@ class ChzzkGameGUI(QWidget):
         if platform_name in self.platform_status:
             self.platform_status[platform_name] = True
 
-        # 전체 오프라인 상태였다면 복구
         if self.is_global_offline:
             self.is_global_offline = False
             self.lbl_current_word.setStyleSheet("color: white;")
@@ -674,12 +673,10 @@ class ChzzkGameGUI(QWidget):
         if self.input_locked: return
         if self.stacked_widget.currentIndex() == 1: return
         if not self.answer_check_enabled: return
-        # 전체 오프라인 상태면 입력 무시 (안전장치)
         if self.is_global_offline: return
 
         word = unicodedata.normalize('NFC', word)
 
-        # 1. 욕설 필터
         is_bad, bad_word = self.profanity_filter.check(word)
         if is_bad:
             self.log_message(f"[차단] {platform} - {nickname}: {word} (금지어: {bad_word})")
@@ -687,7 +684,6 @@ class ChzzkGameGUI(QWidget):
             threading.Thread(target=self.db_manager.mark_word_as_forbidden, args=(word,)).start()
             return
 
-        # 2. 형식 검사
         if len(word) < 1: return
         if not re.fullmatch(r'[가-힣]+', word):
             self.async_log_history(nickname, word, self.current_word_text, "Fail", "한글 아님")
@@ -704,7 +700,6 @@ class ChzzkGameGUI(QWidget):
 
         self.input_locked = True
         
-        # 3. DB 검증 (플랫폼 정보 전달)
         threading.Thread(target=self._bg_check_word, args=(platform, word, nickname)).start()
 
     def _bg_check_word(self, platform, word, nickname):
