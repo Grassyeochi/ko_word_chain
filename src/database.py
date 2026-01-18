@@ -278,7 +278,10 @@ class DatabaseManager:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             backup_dir = "backups"
             if not os.path.exists(backup_dir): os.makedirs(backup_dir)
-            tables = ["ko_word", "app_logs", "game_history"]
+            
+            # [수정 2] ko_word 테이블 제외
+            tables = ["app_logs", "game_history"]
+            
             try:
                 if not self.conn: return False, None
                 with self.conn.cursor() as cursor:

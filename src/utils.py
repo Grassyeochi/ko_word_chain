@@ -6,10 +6,12 @@ import threading
 from email.mime.text import MIMEText
 from datetime import datetime
 
+# 파일 접근 경합 방지용 락
 file_lock = threading.Lock()
 
 def update_env_variable(key, value):
     env_path = ".env"
+    
     with file_lock:
         if not os.path.exists(env_path):
             try:
@@ -53,15 +55,34 @@ def update_env_variable(key, value):
             print(f"[시스템] .env 업데이트 실패: {e}")
 
 def log_unknown_word(word):
+    # [수정 1-1] 한 글자는 저장하지 않음
+    if len(word) < 2:
+        return
+
     file_path = "unknown_words.txt"
-    try:
-        with open(file_path, "a", encoding="utf-8") as f:
-            f.write(f"{word}\n")
-    except Exception as e:
-        print(f"[오류] 없는 단어 기록 실패: {e}")
+    
+    with file_lock:
+        # [수정 1-2] 이미 txt에 적혀 있다면 저장하지 않음
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    # 파일 내용을 읽어 set으로 변환 (검색 속도 향상)
+                    existing_words = {line.strip() for line in f}
+                
+                if word in existing_words:
+                    return # 이미 존재하면 종료
+            except Exception:
+                pass # 파일 읽기 오류 시에는 쓰기 시도
+
+        try:
+            with open(file_path, "a", encoding="utf-8") as f:
+                f.write(f"{word}\n")
+        except Exception as e:
+            print(f"[오류] 없는 단어 기록 실패: {e}")
 
 def handle_violation_alert(nickname, word):
     record_file = "violation_users.txt"
+    # 단순 파일 읽기이므로 락 없이 진행하거나 필요 시 추가
     if os.path.exists(record_file):
         try:
             with open(record_file, "r", encoding="utf-8") as f:
