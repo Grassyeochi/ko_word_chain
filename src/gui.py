@@ -71,13 +71,12 @@ class ShutdownDialog(QDialog):
 
 # --- 1. 시스템 사전 점검 다이얼로그 ---
 class StartupCheckDialog(QDialog):
-    # [수정] 시그널 인자 추가: (치지직결과, 메시지, 유튜브결과, 메시지, DB결과, 메시지, 환경변수결과, 메시지)
     check_finished_signal = pyqtSignal(bool, str, bool, str, bool, str, bool, str)
 
     def __init__(self, chzzk_monitor, youtube_monitor, db_manager):
         super().__init__()
         self.setWindowTitle("시스템 사전 점검")
-        self.resize(600, 300) # 높이 약간 증가
+        self.resize(600, 300)
         self.chzzk = chzzk_monitor
         self.youtube = youtube_monitor
         self.db = db_manager
@@ -101,7 +100,6 @@ class StartupCheckDialog(QDialog):
         self.lbl_db.setFont(QFont("NanumBarunGothic", 12))
         layout.addWidget(self.lbl_db)
 
-        # [복구] 환경변수 체크 레이블 추가
         self.lbl_env = QLabel("환경변수(날짜) 확인 중...")
         self.lbl_env.setFont(QFont("NanumBarunGothic", 12))
         layout.addWidget(self.lbl_env)
@@ -134,21 +132,16 @@ class StartupCheckDialog(QDialog):
         self.lbl_db.setText("DB 연결 확인 중...")
         self.lbl_env.setText("환경변수(날짜) 확인 중...")
         
-        # 스타일 초기화
         for lbl in [self.lbl_chzzk, self.lbl_yt, self.lbl_db, self.lbl_env]:
             lbl.setStyleSheet("color: black;")
         
         threading.Thread(target=self._check_logic_thread, daemon=True).start()
 
     def _check_logic_thread(self):
-        # 1. 네트워크 체크
         chzzk_ok, chzzk_msg = self.chzzk.check_live_status_sync()
         yt_ok, yt_msg = self.youtube.check_live_status_sync()
-        
-        # 2. DB 체크
         is_db_ok, msg_db = self.db.test_db_integrity()
 
-        # 3. [복구] 환경변수 체크 로직
         is_env_ok = False
         env_msg = ""
         env_date_str = os.getenv("db_reset_time")
@@ -173,7 +166,6 @@ class StartupCheckDialog(QDialog):
         style_ok = "color: green; font-weight: bold;"
         style_no = "color: red; font-weight: bold;"
         
-        # 1. 치지직
         if chzzk_ok:
             self.lbl_chzzk.setText(f"✔ 치지직: {chzzk_msg}")
             self.lbl_chzzk.setStyleSheet(style_ok)
@@ -183,7 +175,6 @@ class StartupCheckDialog(QDialog):
             self.lbl_chzzk.setStyleSheet(style_no)
             self.use_chzzk = False
 
-        # 2. 유튜브
         if yt_ok:
             self.lbl_yt.setText(f"✔ 유튜브: {yt_msg}")
             self.lbl_yt.setStyleSheet(style_ok)
@@ -193,7 +184,6 @@ class StartupCheckDialog(QDialog):
             self.lbl_yt.setStyleSheet(style_no)
             self.use_youtube = False
 
-        # 3. DB
         if is_db_ok:
             self.lbl_db.setText(f"✔ DB 상태: {msg_db}")
             self.lbl_db.setStyleSheet(style_ok)
@@ -201,7 +191,6 @@ class StartupCheckDialog(QDialog):
             self.lbl_db.setText(f"❌ DB 상태: {msg_db}")
             self.lbl_db.setStyleSheet(style_no)
 
-        # 4. 환경변수
         if is_env_ok:
             self.lbl_env.setText(f"✔ {env_msg}")
             self.lbl_env.setStyleSheet(style_ok)
@@ -212,7 +201,6 @@ class StartupCheckDialog(QDialog):
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
 
-        # [조건 업데이트] DB OK + Env OK + (치지직 or 유튜브)
         if is_db_ok and is_env_ok and (self.use_chzzk or self.use_youtube):
             self.btn_next.setEnabled(True)
 
@@ -457,14 +445,11 @@ class ChzzkGameGUI(QWidget):
         self.title_label.setFont(QFont("NanumBarunGothic", 50, QFont.Weight.Bold))
         self.title_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         left_layout.addWidget(self.title_label)
-        
-        # [수정] 부제목 잘림 해결 (마진 조정)
         self.subtitle_label = QLabel("치지직 / 유튜브 동시송출 - 동시참여")
         self.subtitle_label.setFont(QFont("NanumBarunGothic", 18))
-        self.subtitle_label.setStyleSheet("color: #CCCCCC; margin-bottom: 10px;") # margin-top 삭제
+        self.subtitle_label.setStyleSheet("color: #CCCCCC; margin-bottom: 10px;") 
         self.subtitle_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         left_layout.addWidget(self.subtitle_label)
-        
         left_layout.addStretch(1)
         self.log_display = QTextEdit()
         self.log_display.setReadOnly(True)
@@ -659,9 +644,11 @@ class ChzzkGameGUI(QWidget):
             self.log_message(f"[시스템] {platform_name} 연결 불안정. 재접속 시도 중...")
 
     def handle_stream_connected(self, platform_name):
-        self.log_message(f"[시스템] {platform_name} 방송 연결됨.")
+        # [수정] 중복 로그 방지 로직 적용
+        was_connected = self.platform_status.get(platform_name, False)
         
-        if platform_name in self.platform_status:
+        if not was_connected:
+            self.log_message(f"[시스템] {platform_name} 방송 연결됨.")
             self.platform_status[platform_name] = True
 
         if self.is_global_offline:
