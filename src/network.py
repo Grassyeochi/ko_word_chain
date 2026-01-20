@@ -37,7 +37,7 @@ class ChzzkMonitor:
             data = res.json()
             content = data.get('content', {})
             live_status = content.get('status')
-            return (True, "방송 중") if live_status == 'OPEN' else (False, f"방송 종료됨 ({live_status})")
+            return (True, "방송 중") if live_status == 'OPEN' else (False, f"방송 종료 ({live_status})")
         except Exception as e:
             return False, str(e)
 
@@ -55,7 +55,6 @@ class ChzzkMonitor:
                 live_status = content.get('status')
                 
                 if live_status != 'OPEN':
-                    # [요구사항 3] GUI 로그에 재접속 시도 알림
                     self.signals.gui_log_message.emit(f"[{self.platform_name}] 방송 종료 감지. 10초 후 재접속 시도...")
                     self.signals.stream_offline.emit(self.platform_name)
                     await asyncio.sleep(10)
@@ -122,7 +121,6 @@ class YouTubeMonitor:
         self.signals = signals
         self.running = True
 
-    # [요구사항 1] 시작 시 방송 상태 확인을 위한 동기 함수 추가
     def check_live_status_sync(self):
         if not pytchat:
             return False, "모듈 미설치"
@@ -130,8 +128,8 @@ class YouTubeMonitor:
             return False, "Video ID 누락"
         
         try:
-            # pytchat을 생성하여 생존 여부(방송 중 여부) 확인
-            chat = pytchat.create(video_id=self.video_id)
+            # [수정] interruptable=False 추가 (스레드 내 시그널 오류 방지)
+            chat = pytchat.create(video_id=self.video_id, interruptable=False)
             if chat.is_alive():
                 chat.terminate()
                 return True, "방송 중"
@@ -151,9 +149,9 @@ class YouTubeMonitor:
 
         while self.running:
             try:
-                chat = pytchat.create(video_id=self.video_id)
+                # [수정] interruptable=False 추가
+                chat = pytchat.create(video_id=self.video_id, interruptable=False)
                 
-                # is_alive() 체크로 초기 연결 확인
                 if not chat.is_alive():
                     self.signals.gui_log_message.emit(f"[{self.platform_name}] 방송을 찾을 수 없음. 10초 후 재시도...")
                     self.signals.stream_offline.emit(self.platform_name)
@@ -177,7 +175,6 @@ class YouTubeMonitor:
                     except Exception:
                         break
 
-                # 루프 탈출 = 연결 끊김
                 self.signals.gui_log_message.emit(f"[{self.platform_name}] 연결 끊김. 10초 후 재접속...")
                 self.signals.stream_offline.emit(self.platform_name)
                 await asyncio.sleep(10)
