@@ -1,21 +1,6 @@
 .env
 missing.py
-1_api2db.py
-2_api2db.py
-3_api2db.py
-4_api2db.py
-5_api2db.py
-6_api2db.py
-7_api2db.py
-8_api2db.py
-9_api2db.py
-10_api2db.py
-11_api2db.py
-12_api2db.py
-13_api2db.py
-14_api2db.py
-15_api2db.py
-16_api2db.py
+api2db
 
 ChzzkWordChain.spec
 
