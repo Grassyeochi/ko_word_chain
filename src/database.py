@@ -15,6 +15,10 @@ class DatabaseManager:
         self.port = int(os.getenv("DB_PORT", 3306))
         self.conn = None
         self.lock = threading.Lock() 
+        
+        # [신규] 현재 진행 중인 게임의 고유 번호 (game_status.num)
+        self.current_game_id = None
+        
         self.connect()
 
     def connect(self):
@@ -34,7 +38,7 @@ class DatabaseManager:
                 charset='utf8mb4',
                 autocommit=True,
                 cursorclass=pymysql.cursors.Cursor,
-                connect_timeout=10 # 타임아웃 설정
+                connect_timeout=10 
             )
             print(f"[시스템] DB 연결 성공 (Database: {self.db_name})")
         except Exception as e:
@@ -51,6 +55,65 @@ class DatabaseManager:
         except Exception:
             print("[시스템] DB 연결 끊김 감지, 재연결 시도...")
             self.connect()
+
+    # --- [신규] 게임 세션 관리 메서드 ---
+    
+    def start_new_game_session(self, start_word):
+        """
+        새로운 게임 시작 시 game_status 테이블에 기록하고 ID를 저장
+        """
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return
+            try:
+                with self.conn.cursor() as cursor:
+                    # 2-1. 요구사항에 맞춘 INSERT 문
+                    sql = "INSERT INTO game_status(start_word) VALUES (%s)"
+                    cursor.execute(sql, (start_word,))
+                    self.current_game_id = cursor.lastrowid # 방금 생성된 num 저장
+                    print(f"[시스템] 새 게임 세션 시작 (ID: {self.current_game_id}, 시작 단어: {start_word})")
+            except Exception as e:
+                print(f"[오류] 게임 세션 시작 실패: {e}")
+
+    def end_game_session(self, fail_count, end_word, end_platform, end_user):
+        """
+        게임 종료 또는 프로그램 종료 시 현재 게임 정보를 업데이트
+        """
+        if self.current_game_id is None:
+            return
+
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return
+            try:
+                # 3. 성공 횟수는 DB에서 직접 조회
+                success_count = 0
+                with self.conn.cursor() as cursor:
+                    cursor.execute("SELECT COUNT(*) FROM ko_word WHERE is_use = TRUE")
+                    success_count = cursor.fetchone()[0]
+
+                with self.conn.cursor() as cursor:
+                    # 3. 업데이트 쿼리 (종료 시간, 단어, 플랫폼, 유저, 카운트)
+                    sql = """
+                        UPDATE game_status 
+                        SET word_currect_count = %s,
+                            word_fail_count = %s,
+                            end_at = NOW(),
+                            end_word = %s,
+                            end_platform = %s,
+                            end_user = %s
+                        WHERE num = %s
+                    """
+                    cursor.execute(sql, (success_count, fail_count, end_word, end_platform, end_user, self.current_game_id))
+                    print(f"[시스템] 게임 세션 종료 기록 완료 (ID: {self.current_game_id})")
+                
+                # 기록 후 ID 초기화 (중복 업데이트 방지)
+                self.current_game_id = None
+                
+            except Exception as e:
+                print(f"[오류] 게임 세션 종료 처리 실패: {e}")
+
+    # -----------------------------------
 
     def check_and_use_word(self, word, nickname):
         word = word.strip()
@@ -279,8 +342,8 @@ class DatabaseManager:
             backup_dir = "backups"
             if not os.path.exists(backup_dir): os.makedirs(backup_dir)
             
-            # [수정 2] ko_word 테이블 제외
-            tables = ["app_logs", "game_history"]
+            # [수정] game_status 테이블 추가
+            tables = ["app_logs", "game_history", "game_status"]
             
             try:
                 if not self.conn: return False, None
@@ -311,6 +374,9 @@ class DatabaseManager:
                     cursor.execute(sql_word_reset)
                     cursor.execute("TRUNCATE TABLE app_logs")
                     cursor.execute("TRUNCATE TABLE game_history")
+                    # game_status는 히스토리 성격이므로 TRUNCATE 여부는 선택사항이나, 
+                    # 보통 완전 리셋이면 날리는게 맞음. 여기선 포함.
+                    cursor.execute("TRUNCATE TABLE game_status") 
                 print("[시스템] 모든 DB 테이블이 초기화되었습니다.")
                 return True
             except Exception as e:
