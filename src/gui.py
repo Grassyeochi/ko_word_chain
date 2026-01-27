@@ -41,7 +41,7 @@ def exception_hook(exctype, value, tb):
 
 sys.excepthook = exception_hook
 
-# --- 0. 종료 알림 다이얼로그 (변경 없음) ---
+# --- 0. 종료 알림 다이얼로그 ---
 class ShutdownDialog(QDialog):
     def __init__(self):
         super().__init__()
@@ -69,7 +69,7 @@ class ShutdownDialog(QDialog):
         self.lbl_status.setText(text)
         QApplication.processEvents()
 
-# --- 1. 시스템 사전 점검 다이얼로그 (변경 없음) ---
+# --- 1. 시스템 사전 점검 다이얼로그 ---
 class StartupCheckDialog(QDialog):
     check_finished_signal = pyqtSignal(bool, str, bool, str, bool, str, bool, str)
 
@@ -197,7 +197,7 @@ class StartupCheckDialog(QDialog):
         if is_db_ok and is_env_ok and (self.use_chzzk or self.use_youtube):
             self.btn_next.setEnabled(True)
 
-# --- 2. 시작 단어 설정 다이얼로그 (변경 없음) ---
+# --- 2. 시작 단어 설정 다이얼로그 ---
 class StartWordOptionDialog(QDialog):
     def __init__(self):
         super().__init__()
@@ -238,7 +238,7 @@ class StartWordOptionDialog(QDialog):
         self.selected_mode = "RECENT"
         self.accept()
 
-# --- 콘솔 윈도우 (변경 없음) ---
+# --- 콘솔 윈도우 ---
 class ConsoleWindow(QWidget):
     def __init__(self, main_window):
         super().__init__()
@@ -267,7 +267,7 @@ class ConsoleWindow(QWidget):
         result_msg = self.main_window.command_manager.execute(cmd_full)
         if result_msg: self.log(result_msg)
 
-# --- 게임 종료 화면 위젯 (변경 없음) ---
+# --- 게임 종료 화면 위젯 ---
 class GameOverWidget(QWidget):
     def __init__(self):
         super().__init__()
@@ -331,7 +331,7 @@ class ChzzkGameGUI(QWidget):
         self.platform_status = {}
         self.is_global_offline = False
 
-        # [신규] 게임 상태 추적 변수
+        # 게임 상태 추적 변수
         self.current_fail_count = 0
         self.last_platform = None
         self.last_user = None
@@ -395,7 +395,7 @@ class ChzzkGameGUI(QWidget):
         shutdown_dlg = ShutdownDialog()
         shutdown_dlg.show()
         
-        # [추가] 종료 시 게임 상태 저장 (강제 종료 상황)
+        # 종료 시 게임 상태 저장
         self.db_manager.end_game_session(
             self.current_fail_count,
             self.current_word_text,
@@ -599,7 +599,7 @@ class ChzzkGameGUI(QWidget):
         self.start_time = time.time()
         self.current_word_text = start_word
         
-        # [신규] 게임 시작 시 카운트 리셋 및 DB 세션 시작
+        # 게임 시작 시 카운트 리셋 및 DB 세션 시작
         self.current_fail_count = 0
         self.db_manager.start_new_game_session(start_word)
         
@@ -718,7 +718,6 @@ class ChzzkGameGUI(QWidget):
 
         is_bad, bad_word = self.profanity_filter.check(word)
         if is_bad:
-            # [추가] 금지어 감지 시 실패 카운트 증가
             self.current_fail_count += 1
             self.log_message(f"[차단] {platform} - {nickname}: {word} (금지어: {bad_word})")
             self.async_log_history(nickname, word, self.current_word_text, "Fail", f"금지어({bad_word})")
@@ -726,10 +725,17 @@ class ChzzkGameGUI(QWidget):
             return
 
         if len(word) < 1: return
+        
         if not re.fullmatch(r'[가-힣]+', word):
-            # [추가] 한글 아님 시 실패 카운트 증가
             self.current_fail_count += 1
             self.async_log_history(nickname, word, self.current_word_text, "Fail", "한글 아님")
+            return
+
+        # 한 글자 단어 처리: 사전 검사 전 즉시 규칙 위반으로 처리
+        if len(word) < 2:
+            self.current_fail_count += 1
+            self.async_log_history(nickname, word, self.current_word_text, "Fail", "한 글자")
+            self.log_message(f"[실패] {platform} - {nickname}: {word} (한 글자 금지)")
             return
 
         if self.current_word_text:
@@ -737,7 +743,6 @@ class ChzzkGameGUI(QWidget):
             first_char = word[0]
             valid_starts = apply_dueum_rule(last_char)
             if first_char not in valid_starts:
-                # [추가] 규칙 위반 시 실패 카운트 증가
                 self.current_fail_count += 1
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "규칙 위반")
                 self.log_message(f"[실패] {platform} - {nickname}: {word} (초성 불일치)")
@@ -767,7 +772,6 @@ class ChzzkGameGUI(QWidget):
         if result_status == "success":
             QTimer.singleShot(1000, self.unlock_input)
             
-            # [신규] 정답자 정보 저장
             self.last_platform = platform
             self.last_user = nickname
             
@@ -797,7 +801,6 @@ class ChzzkGameGUI(QWidget):
 
         else:
             self.input_locked = False
-            # [추가] 실패 시 카운트 증가
             self.current_fail_count += 1
             fail_msg = f"[실패] {platform} - {nickname}: {word}"
             
@@ -815,9 +818,13 @@ class ChzzkGameGUI(QWidget):
             elif result_status == "forbidden":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "금지어")
                 self.log_message(f"{fail_msg} (금지어)")
+            # [수정] 알 수 없는 오류(DB Error) 발생 시 입력 잠금 해제 처리 추가
+            else:
+                self.log_message(f"[시스템 오류] {fail_msg} (DB 에러 발생)")
+                # 여기서 해제하지 않으면 게임이 멈춤
+                self.input_locked = False
 
     def process_game_over(self, last_word, last_winner):
-        # [신규] 게임 종료 시 DB 세션 업데이트
         self.db_manager.end_game_session(
             self.current_fail_count,
             last_word,

@@ -86,8 +86,18 @@ class ChzzkMonitor:
                             if cmd == 93101:
                                 for chat in data.get('bdy', []):
                                     msg = chat.get('msg', '').strip()
-                                    profile = json.loads(chat.get('profile', '{}'))
-                                    nickname = profile.get('nickname', '익명')
+                                    
+                                    # [수정] 프로필 파싱 안전 장치 추가
+                                    profile_str = chat.get('profile')
+                                    if profile_str:
+                                        try:
+                                            profile = json.loads(profile_str)
+                                            nickname = profile.get('nickname', '익명')
+                                        except:
+                                            nickname = '익명'
+                                    else:
+                                        nickname = '익명'
+
                                     if "클린봇" in msg: continue 
                                     if msg.startswith("!"):
                                         content = msg[1:].strip()
@@ -128,7 +138,6 @@ class YouTubeMonitor:
             return False, "Video ID 누락"
         
         try:
-            # [수정] interruptable=False 추가 (스레드 내 시그널 오류 방지)
             chat = pytchat.create(video_id=self.video_id, interruptable=False)
             if chat.is_alive():
                 chat.terminate()
@@ -149,7 +158,6 @@ class YouTubeMonitor:
 
         while self.running:
             try:
-                # [수정] interruptable=False 추가
                 chat = pytchat.create(video_id=self.video_id, interruptable=False)
                 
                 if not chat.is_alive():
