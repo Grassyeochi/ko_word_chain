@@ -19,16 +19,43 @@ class CommandManager:
         elif cmd == "restart": return self._handle_restart()
         elif cmd == "ac": return self._handle_ac(args)
         elif cmd == "log": return self._handle_log(args)
+        # [신규] game start/stop
+        elif cmd == "game": return self._handle_game_control(args)
+        # [신규] network start/stop
+        elif cmd == "network": return self._handle_network_control(args)
+        
         else: return f"[오류] 알 수 없는 명령어: {cmd}"
 
-    def _handle_chcw(self, full_command):
-        try:
-            target_word = full_command[len("chcw"):].strip().replace('"', '').replace("'", "")
-        except:
-            return "[오류] 파싱 실패"
-            
-        if not target_word: return "[오류] 단어를 입력하세요."
+    # [신규] game start/stop
+    def _handle_game_control(self, args):
+        if not args: return "[오류] game start 또는 game stop 입력 필요"
+        action = args[0].lower()
+        if action == "stop":
+            # 일시정지 (GUI 메서드 호출)
+            self.gui.stop_game_logic()
+            return None # GUI 로그는 메서드 안에서 처리
+        elif action == "start":
+            # 재시작
+            self.gui.start_game_logic_resume()
+            return None
+        return "[오류] game start 또는 game stop 만 가능"
 
+    # [신규] network start/stop
+    def _handle_network_control(self, args):
+        if not args: return "[오류] network start 또는 network stop 입력 필요"
+        action = args[0].lower()
+        if action == "stop":
+            self.gui.stop_network()
+            return None
+        elif action == "start":
+            self.gui.start_network()
+            return None
+        return "[오류] network start 또는 network stop 만 가능"
+
+    def _handle_chcw(self, full_command):
+        try: target_word = full_command[len("chcw"):].strip().replace('"', '').replace("'", "")
+        except: return "[오류] 파싱 실패"
+        if not target_word: return "[오류] 단어를 입력하세요."
         admin_nick = "console-admin"
         if self.db.admin_force_use_word(target_word, admin_nick):
             self.gui.current_word_text = target_word
@@ -40,14 +67,12 @@ class CommandManager:
             msg = f"[관리자] 단어가 '{target_word}'(으)로 변경됨."
             self.gui.log_message(msg)
             return f"[성공] {msg}"
-        else:
-            return f"[실패] 단어 '{target_word}' DB 없음."
+        else: return f"[실패] 단어 '{target_word}' DB 없음."
 
     def _handle_random(self):
         admin_nick = "console-random"
         new_word = self.db.get_and_use_random_available_word(admin_nick)
         if not new_word: return "[실패] 남은 단어 없음."
-        
         self.gui.current_word_text = new_word
         self.gui.set_responsive_text(new_word)
         self.gui.last_change_time = time.time()
@@ -76,14 +101,10 @@ class CommandManager:
         if not args: return "[오류] ac start/stop"
         action = args[0].lower()
         if action == "stop":
-            self.gui.answer_check_enabled = False
-            self.gui.lbl_pause_status.show()
-            self.gui.log_message("[관리자] 정답 체크 중지.")
+            self.gui.stop_game_logic()
             return "[알림] 중지됨"
         elif action == "start":
-            self.gui.answer_check_enabled = True
-            self.gui.lbl_pause_status.hide()
-            self.gui.log_message("[관리자] 정답 체크 시작.")
+            self.gui.start_game_logic_resume()
             return "[알림] 시작됨"
         return "[오류] ac start 또는 ac stop"
 

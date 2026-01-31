@@ -22,30 +22,32 @@ class ChzzkMonitor:
         self.signals = signals
         self.running = True
 
+    # [신규] 외부에서 루프 종료 요청
+    def stop(self):
+        self.running = False
+
     async def _async_get(self, url):
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, partial(requests.get, url, timeout=5))
 
     def check_live_status_sync(self):
-        if not self.channel_id:
-            return False, "Channel ID 누락"
+        if not self.channel_id: return False, "Channel ID 누락"
         try:
             status_url = f"https://api.chzzk.naver.com/polling/v2/channels/{self.channel_id}/live-status"
             res = requests.get(status_url, timeout=5)
-            if res.status_code != 200:
-                return False, f"API 오류 ({res.status_code})"
+            if res.status_code != 200: return False, f"API 오류 ({res.status_code})"
             data = res.json()
             content = data.get('content', {})
             live_status = content.get('status')
             return (True, "방송 중") if live_status == 'OPEN' else (False, f"방송 종료 ({live_status})")
-        except Exception as e:
-            return False, str(e)
+        except Exception as e: return False, str(e)
 
     async def run(self):
         if not self.channel_id:
             self.signals.log_request.emit(10, "Chzzk", "환경변수 누락", None)
             return
-
+        
+        # running 플래그가 True일 때만 루프 실행
         while self.running:
             try:
                 status_url = f"https://api.chzzk.naver.com/polling/v2/channels/{self.channel_id}/live-status"
@@ -57,7 +59,9 @@ class ChzzkMonitor:
                 if live_status != 'OPEN':
                     self.signals.gui_log_message.emit(f"[{self.platform_name}] 방송 종료 감지. 10초 후 재접속 시도...")
                     self.signals.stream_offline.emit(self.platform_name)
-                    await asyncio.sleep(10)
+                    for _ in range(10): # 1초씩 10번 대기 (stop 반응성 향상)
+                        if not self.running: break
+                        await asyncio.sleep(1)
                     continue
 
                 chat_channel_id = content['chatChannelId']
@@ -65,7 +69,6 @@ class ChzzkMonitor:
                 token_res_obj = await self._async_get(token_url)
                 token_res = token_res_obj.json()
                 access_token = token_res['content']['accessToken']
-                
                 TIMEOUT_SECONDS = float(os.getenv("WS_TIMEOUT", 600.0))
 
                 async with websockets.connect(self.ws_url, ping_interval=None) as websocket:
@@ -82,46 +85,32 @@ class ChzzkMonitor:
                             res = await asyncio.wait_for(websocket.recv(), timeout=TIMEOUT_SECONDS)
                             data = json.loads(res)
                             cmd = data.get('cmd')
-
                             if cmd == 93101:
                                 for chat in data.get('bdy', []):
                                     msg = chat.get('msg', '').strip()
-                                    
-                                    # [수정] 프로필 파싱 안전 장치 추가
-                                    profile_str = chat.get('profile')
-                                    if profile_str:
-                                        try:
-                                            profile = json.loads(profile_str)
-                                            nickname = profile.get('nickname', '익명')
-                                        except:
-                                            nickname = '익명'
-                                    else:
-                                        nickname = '익명'
-
+                                    profile = json.loads(chat.get('profile', '{}'))
+                                    nickname = profile.get('nickname', '익명')
                                     if "클린봇" in msg: continue 
                                     if msg.startswith("!"):
                                         content = msg[1:].strip()
                                         if content:
                                             self.signals.word_detected.emit(self.platform_name, nickname, content.split()[0])
-
                             elif cmd == 0:
                                 await websocket.send(json.dumps({"ver": "2", "cmd": 10000}))
-                        
                         except asyncio.TimeoutError:
                             self.signals.gui_log_message.emit(f"[{self.platform_name}] 응답 없음(Zombie). 재접속 시도...")
                             break 
-                        except Exception:
-                            break 
-            
+                        except Exception: break 
             except Exception as e:
                 self.signals.log_request.emit(9, "Chzzk", "접속 오류", str(e))
                 self.signals.gui_log_message.emit(f"[{self.platform_name}] 접속 오류. 10초 후 재시도...")
                 self.signals.stream_offline.emit(self.platform_name)
-                await asyncio.sleep(10)
+                for _ in range(10):
+                    if not self.running: break
+                    await asyncio.sleep(1)
                 continue
             
-            if self.running:
-                await asyncio.sleep(3)
+            if self.running: await asyncio.sleep(3)
 
 
 class YouTubeMonitor:
@@ -131,27 +120,25 @@ class YouTubeMonitor:
         self.signals = signals
         self.running = True
 
+    # [신규] 외부 종료 요청
+    def stop(self):
+        self.running = False
+
     def check_live_status_sync(self):
-        if not pytchat:
-            return False, "모듈 미설치"
-        if not self.video_id:
-            return False, "Video ID 누락"
-        
+        if not pytchat: return False, "모듈 미설치"
+        if not self.video_id: return False, "Video ID 누락"
         try:
             chat = pytchat.create(video_id=self.video_id, interruptable=False)
             if chat.is_alive():
                 chat.terminate()
                 return True, "방송 중"
-            else:
-                return False, "방송 종료/대기/오류"
-        except Exception as e:
-            return False, f"오류: {str(e)}"
+            else: return False, "방송 종료/대기/오류"
+        except Exception as e: return False, f"오류: {str(e)}"
 
     async def run(self):
         if not pytchat:
             self.signals.gui_log_message.emit("[오류] pytchat 모듈 미설치로 유튜브 기능 비활성화")
             return
-
         if not self.video_id:
             self.signals.log_request.emit(10, "YouTube", "환경변수 YOUTUBE_VIDEO_ID 누락", None)
             return
@@ -159,36 +146,50 @@ class YouTubeMonitor:
         while self.running:
             try:
                 chat = pytchat.create(video_id=self.video_id, interruptable=False)
-                
                 if not chat.is_alive():
                     self.signals.gui_log_message.emit(f"[{self.platform_name}] 방송을 찾을 수 없음. 10초 후 재시도...")
                     self.signals.stream_offline.emit(self.platform_name)
-                    await asyncio.sleep(10)
+                    for _ in range(10):
+                        if not self.running: break
+                        await asyncio.sleep(1)
                     continue
 
                 self.signals.stream_connected.emit(self.platform_name)
                 self.signals.log_request.emit(1, "YouTube", f"채팅 리스너 시작 ({self.video_id})", None)
 
-                while self.running and chat.is_alive():
+                while self.running:
+                    if not chat.is_alive():
+                        self.signals.gui_log_message.emit(f"[{self.platform_name}] 라이브러리 연결 상태: Dead")
+                        break 
                     try:
                         data = chat.get()
-                        for c in data.sync_items():
+                        items = data.sync_items()
+                        for c in items:
                             msg = c.message.strip()
                             nickname = c.author.name
                             if msg.startswith("!"):
                                 content = msg[1:].strip()
                                 if content:
                                     self.signals.word_detected.emit(self.platform_name, nickname, content.split()[0])
-                        await asyncio.sleep(0.1)
-                    except Exception:
-                        break
+                        await asyncio.sleep(0.2)
+                    except Exception as e:
+                        print(f"[YouTube Warning] 데이터 읽기 중 경미한 오류: {e}")
+                        await asyncio.sleep(1)
+                        continue
 
                 self.signals.gui_log_message.emit(f"[{self.platform_name}] 연결 끊김. 10초 후 재접속...")
                 self.signals.stream_offline.emit(self.platform_name)
-                await asyncio.sleep(10)
+                try: chat.terminate()
+                except: pass
+                
+                for _ in range(10):
+                    if not self.running: break
+                    await asyncio.sleep(1)
 
             except Exception as e:
                 self.signals.log_request.emit(9, "YouTube", "접속 오류", str(e))
-                self.signals.gui_log_message.emit(f"[{self.platform_name}] 오류 발생. 10초 후 재시도...")
+                self.signals.gui_log_message.emit(f"[{self.platform_name}] 오류 발생({e}). 10초 후 재시도...")
                 self.signals.stream_offline.emit(self.platform_name)
-                await asyncio.sleep(10)
+                for _ in range(10):
+                    if not self.running: break
+                    await asyncio.sleep(1)
