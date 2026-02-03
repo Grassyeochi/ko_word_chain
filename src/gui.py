@@ -374,6 +374,8 @@ class ChzzkGameGUI(QWidget):
         self.use_youtube = check_dlg.use_youtube
 
         word_dlg = StartWordOptionDialog()
+        start_user = None 
+        
         if word_dlg.exec() == QDialog.DialogCode.Accepted:
             mode = word_dlg.selected_mode
             start_word = "시작"
@@ -384,10 +386,16 @@ class ChzzkGameGUI(QWidget):
             elif mode == "RANDOM":
                 start_word = self.db_manager.get_random_start_word()
             elif mode == "RECENT":
-                start_word = self.db_manager.get_last_used_word()
+                ret = self.db_manager.get_last_used_word()
+                if isinstance(ret, tuple):
+                    start_word = ret[0]
+                    start_user = ret[1]
+                else:
+                    start_word = str(ret)
+                    start_user = None
             
             self.start_monitor_service()
-            self.start_game_logic(start_word, restore_time=False)
+            self.start_game_logic(start_word, start_user=start_user, restore_time=False)
         else:
             sys.exit()
 
@@ -429,7 +437,6 @@ class ChzzkGameGUI(QWidget):
 
     def init_ui(self):
         self.setWindowTitle("치지직/유튜브 한국어 끝말잇기")
-        # [수정 1] 프로그램 실행 후 크기 고정 (불변)
         self.setFixedSize(1200, 700)
         self.main_layout_container = QVBoxLayout(self)
         self.main_layout_container.setContentsMargins(0,0,0,0)
@@ -529,7 +536,6 @@ class ChzzkGameGUI(QWidget):
         lbl_cw_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl_cw_title.setStyleSheet("color: #AAA;")
         self.lbl_current_word = QLabel("...")
-        # [수정 2] 라벨이 크기 확장을 요구하지 않도록 Policy 설정
         self.lbl_current_word.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.lbl_current_word.setFont(QFont("NanumBarunGothic", 100, QFont.Weight.Bold))
         self.lbl_current_word.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -545,7 +551,6 @@ class ChzzkGameGUI(QWidget):
         self.lbl_next_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_next_hint.setStyleSheet("color: #888;")
         game_area.addWidget(lbl_cw_title)
-        # [수정 2-1] Policy가 Ignored여도 공간을 차지하도록 stretch 추가
         game_area.addWidget(self.lbl_current_word, 1)
         game_area.addWidget(self.lbl_pause_status)
         game_area.addWidget(self.lbl_next_hint)
@@ -599,11 +604,16 @@ class ChzzkGameGUI(QWidget):
         self.lbl_current_word.setFont(font)
         self.lbl_current_word.setText(formatted_text)
 
-    def start_game_logic(self, start_word, restore_time=False):
+    def start_game_logic(self, start_word, start_user=None, restore_time=False):
+        if isinstance(start_word, (tuple, list)):
+            if start_word:
+                start_word = str(start_word[0])
+            else:
+                start_word = "시작"
+
         self.start_time = time.time()
         self.current_word_text = start_word
         
-        # 게임 시작 시 카운트 리셋 및 DB 세션 시작
         self.current_fail_count = 0
         self.db_manager.start_new_game_session(start_word)
         
@@ -621,7 +631,13 @@ class ChzzkGameGUI(QWidget):
         else: self.last_change_time = time.time()
         curr_dt_str = datetime.fromtimestamp(self.last_change_time).strftime("%Y.%m.%d %H:%M:%S")
         update_env_variable("last_word_change_time", curr_dt_str)
-        self.lbl_last_winner.setText("현재 단어를 맞춘 사람: -")
+
+        # [수정] 요청된 포맷 반영 (괄호 제거)
+        if start_user:
+            self.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: {start_user}")
+        else:
+            self.lbl_last_winner.setText("현재 단어를 맞춘 사람: -")
+
         self.log_display.clear()
         self.answer_check_enabled = True
         self.lbl_pause_status.hide()
@@ -783,7 +799,8 @@ class ChzzkGameGUI(QWidget):
             self.async_log_history(nickname, word, self.current_word_text, "Success")
             
             display_str = f"[{platform}] {nickname}"
-            self.lbl_last_winner.setText(f"정답자: {display_str}")
+            # [수정] 게임 중 정답자가 바뀔 때에도 동일한 포맷 유지
+            self.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: {display_str}")
             self.log_message(f"[성공] {platform} - {nickname}: {word}")
 
             self.current_word_text = word
