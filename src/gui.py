@@ -14,8 +14,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QFrame, QSizePolicy, QMessageBox, QGridLayout,
                              QPushButton, QTextEdit, QLineEdit, QStackedWidget,
                              QDialog, QProgressBar, QApplication)
-from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QFont, QCloseEvent
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal, QRect
+from PyQt6.QtGui import QFont, QCloseEvent, QFontMetrics
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 from .signals import GameSignals
@@ -535,8 +535,8 @@ class ChzzkGameGUI(QWidget):
         lbl_cw_title.setStyleSheet("color: #AAA;")
         self.lbl_current_word = QLabel("...")
         self.lbl_current_word.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        # [수정] 기본 폰트 크기 110으로 시작 (단어가 짧으면 그대로)
-        self.lbl_current_word.setFont(QFont("NanumBarunGothic", 110, QFont.Weight.Bold))
+        # [수정] 기본 폰트 크기 100으로 시작
+        self.lbl_current_word.setFont(QFont("NanumBarunGothic", 100, QFont.Weight.Bold))
         self.lbl_current_word.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_current_word.setStyleSheet("color: white;")
         self.lbl_current_word.setWordWrap(True)
@@ -576,7 +576,7 @@ class ChzzkGameGUI(QWidget):
         self.log_display.append(message)
         self.log_display.verticalScrollBar().setValue(self.log_display.verticalScrollBar().maximum())
 
-    # [수정] 6글자 단위 줄바꿈 및 글자 크기 최적화 로직 적용
+    # [수정] 6글자 단위 줄바꿈 및 오버플로우 방지 로직 (Auto-Shrink)
     def set_responsive_text(self, text):
         if not text: return
         length = len(text)
@@ -587,24 +587,38 @@ class ChzzkGameGUI(QWidget):
         formatted_text = "\n".join(chunks)
         num_lines = len(chunks)
 
-        # 2. 줄 수에 따른 폰트 크기 결정
-        # 1줄: 110pt (매우 크게)
-        # 2줄: 85pt
-        # 3줄: 65pt
-        # 4줄 이상: 점점 작게
-        if num_lines == 1:
-            new_size = 110
-        elif num_lines == 2:
-            new_size = 85
-        elif num_lines == 3:
-            new_size = 65
-        elif num_lines == 4:
-            new_size = 45
-        else:
-            new_size = 35
+        # 2. 시작 폰트 크기 설정 (기존보다 더 보수적으로 잡음)
+        if num_lines == 1: target_size = 100
+        elif num_lines == 2: target_size = 65 
+        elif num_lines == 3: target_size = 45 
+        else: target_size = 30
         
+        # 3. 오버플로우 방지 로직 (Auto-Shrink)
+        # 라벨의 현재 크기를 가져옵니다.
+        label_w = self.lbl_current_word.width()
+        label_h = self.lbl_current_word.height()
+        
+        # 윈도우가 아직 안 떠서 크기가 0일 경우, 고정된 크기(1200x700) 기반으로 대략적인 가용 영역 추정
+        # 레이아웃 비율이 3:5 정도 되므로 높이는 대략 300~400px, 너비는 600px 정도 예상
+        if label_w < 10 or label_h < 10:
+            label_w = 600
+            label_h = 300
+
         font = self.lbl_current_word.font()
-        font.setPointSize(new_size)
+        font.setPointSize(target_size)
+        fm = QFontMetrics(font)
+        
+        # 텍스트가 들어갈 영역 계산 (Padding 고려)
+        # boundingRect(rect, flags, text) 사용 시 정렬 플래그 포함
+        bound_rect = fm.boundingRect(0, 0, label_w, label_h, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, formatted_text)
+        
+        # 영역을 벗어나면 폰트 크기 줄이기 루프 (최소 10pt까지)
+        while (bound_rect.height() > label_h or bound_rect.width() > label_w) and target_size > 10:
+            target_size -= 5
+            font.setPointSize(target_size)
+            fm = QFontMetrics(font)
+            bound_rect = fm.boundingRect(0, 0, label_w, label_h, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, formatted_text)
+        
         self.lbl_current_word.setFont(font)
         self.lbl_current_word.setText(formatted_text)
 
@@ -794,7 +808,7 @@ class ChzzkGameGUI(QWidget):
             self.async_log_history(nickname, word, self.current_word_text, "Success")
             
             display_str = f"[{platform}] {nickname}"
-            self.lbl_last_winner.setText(f"정답자: {display_str}")
+            self.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: {display_str}")
             self.log_message(f"[성공] {platform} - {nickname}: {word}")
 
             self.current_word_text = word
