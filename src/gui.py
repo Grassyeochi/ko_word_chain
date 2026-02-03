@@ -331,7 +331,6 @@ class ChzzkGameGUI(QWidget):
         self.platform_status = {}
         self.is_global_offline = False
 
-        # 게임 상태 추적 변수
         self.current_fail_count = 0
         self.last_platform = None
         self.last_user = None
@@ -403,7 +402,6 @@ class ChzzkGameGUI(QWidget):
         shutdown_dlg = ShutdownDialog()
         shutdown_dlg.show()
         
-        # 종료 시 게임 상태 저장
         self.db_manager.end_game_session(
             self.current_fail_count,
             self.current_word_text,
@@ -537,7 +535,8 @@ class ChzzkGameGUI(QWidget):
         lbl_cw_title.setStyleSheet("color: #AAA;")
         self.lbl_current_word = QLabel("...")
         self.lbl_current_word.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        self.lbl_current_word.setFont(QFont("NanumBarunGothic", 100, QFont.Weight.Bold))
+        # [수정] 기본 폰트 크기 110으로 시작 (단어가 짧으면 그대로)
+        self.lbl_current_word.setFont(QFont("NanumBarunGothic", 110, QFont.Weight.Bold))
         self.lbl_current_word.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_current_word.setStyleSheet("color: white;")
         self.lbl_current_word.setWordWrap(True)
@@ -551,7 +550,10 @@ class ChzzkGameGUI(QWidget):
         self.lbl_next_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_next_hint.setStyleSheet("color: #888;")
         game_area.addWidget(lbl_cw_title)
-        game_area.addWidget(self.lbl_current_word, 1)
+        
+        # [유지] 공간 확보를 위해 비율 3 적용
+        game_area.addWidget(self.lbl_current_word, 3)
+        
         game_area.addWidget(self.lbl_pause_status)
         game_area.addWidget(self.lbl_next_hint)
         game_area.addStretch(1)
@@ -574,32 +576,34 @@ class ChzzkGameGUI(QWidget):
         self.log_display.append(message)
         self.log_display.verticalScrollBar().setValue(self.log_display.verticalScrollBar().maximum())
 
+    # [수정] 6글자 단위 줄바꿈 및 글자 크기 최적화 로직 적용
     def set_responsive_text(self, text):
         if not text: return
         length = len(text)
+        
+        # 1. 6글자 단위로 텍스트 분할 (무조건)
+        chunk_size = 6
+        chunks = [text[i:i+chunk_size] for i in range(0, length, chunk_size)]
+        formatted_text = "\n".join(chunks)
+        num_lines = len(chunks)
+
+        # 2. 줄 수에 따른 폰트 크기 결정
+        # 1줄: 110pt (매우 크게)
+        # 2줄: 85pt
+        # 3줄: 65pt
+        # 4줄 이상: 점점 작게
+        if num_lines == 1:
+            new_size = 110
+        elif num_lines == 2:
+            new_size = 85
+        elif num_lines == 3:
+            new_size = 65
+        elif num_lines == 4:
+            new_size = 45
+        else:
+            new_size = 35
+        
         font = self.lbl_current_word.font()
-        num_lines = 1
-        new_size = 90
-        if length > 50:
-            num_lines = 6; new_size = 25
-        elif length > 30:
-            num_lines = 5; new_size = 35
-        elif length > 20:
-            num_lines = 4; new_size = 45
-        elif length > 12:
-            num_lines = 3; new_size = 60
-        elif length > 6:
-            num_lines = 2; new_size = 75
-        else:
-            num_lines = 1; new_size = 90
-        if num_lines > 1:
-            chunk_size = math.ceil(length / num_lines)
-            chunks = []
-            for i in range(0, length, chunk_size):
-                chunks.append(text[i:i+chunk_size])
-            formatted_text = "\n".join(chunks)
-        else:
-            formatted_text = text
         font.setPointSize(new_size)
         self.lbl_current_word.setFont(font)
         self.lbl_current_word.setText(formatted_text)
@@ -632,7 +636,6 @@ class ChzzkGameGUI(QWidget):
         curr_dt_str = datetime.fromtimestamp(self.last_change_time).strftime("%Y.%m.%d %H:%M:%S")
         update_env_variable("last_word_change_time", curr_dt_str)
 
-        # [수정] 요청된 포맷 반영 (괄호 제거)
         if start_user:
             self.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: {start_user}")
         else:
@@ -745,17 +748,9 @@ class ChzzkGameGUI(QWidget):
             return
 
         if len(word) < 1: return
-        
         if not re.fullmatch(r'[가-힣]+', word):
             self.current_fail_count += 1
             self.async_log_history(nickname, word, self.current_word_text, "Fail", "한글 아님")
-            return
-
-        # 한 글자 단어 처리: 사전 검사 전 즉시 규칙 위반으로 처리
-        if len(word) < 2:
-            self.current_fail_count += 1
-            self.async_log_history(nickname, word, self.current_word_text, "Fail", "한 글자")
-            self.log_message(f"[실패] {platform} - {nickname}: {word} (한 글자 금지)")
             return
 
         if self.current_word_text:
@@ -799,8 +794,7 @@ class ChzzkGameGUI(QWidget):
             self.async_log_history(nickname, word, self.current_word_text, "Success")
             
             display_str = f"[{platform}] {nickname}"
-            # [수정] 게임 중 정답자가 바뀔 때에도 동일한 포맷 유지
-            self.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: {display_str}")
+            self.lbl_last_winner.setText(f"정답자: {display_str}")
             self.log_message(f"[성공] {platform} - {nickname}: {word}")
 
             self.current_word_text = word
@@ -839,7 +833,6 @@ class ChzzkGameGUI(QWidget):
             elif result_status == "forbidden":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "금지어")
                 self.log_message(f"{fail_msg} (금지어)")
-            # 알 수 없는 오류(DB Error) 발생 시 입력 잠금 해제 처리
             else:
                 self.log_message(f"[시스템 오류] {fail_msg} (DB 에러 발생)")
                 self.input_locked = False
