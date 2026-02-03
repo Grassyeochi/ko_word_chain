@@ -25,8 +25,10 @@ from .utils import apply_dueum_rule, send_alert_email, ProfanityFilter, update_e
 from .commands import CommandManager
 
 def resource_path(relative_path):
-    try: base_path = sys._MEIPASS
-    except Exception: base_path = os.path.abspath(".")
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
 def exception_hook(exctype, value, tb):
@@ -39,7 +41,7 @@ def exception_hook(exctype, value, tb):
 
 sys.excepthook = exception_hook
 
-# --- 0. 종료 알림 다이얼로그 (변경 없음) ---
+# --- 0. 종료 알림 다이얼로그 ---
 class ShutdownDialog(QDialog):
     def __init__(self):
         super().__init__()
@@ -62,13 +64,15 @@ class ShutdownDialog(QDialog):
         layout.addWidget(self.lbl_title)
         layout.addWidget(self.lbl_status)
         self.setLayout(layout)
+
     def set_status(self, text):
         self.lbl_status.setText(text)
         QApplication.processEvents()
 
-# --- 1. 시스템 사전 점검 다이얼로그 (변경 없음) ---
+# --- 1. 시스템 사전 점검 다이얼로그 ---
 class StartupCheckDialog(QDialog):
     check_finished_signal = pyqtSignal(bool, str, bool, str, bool, str, bool, str)
+
     def __init__(self, chzzk_monitor, youtube_monitor, db_manager):
         super().__init__()
         self.setWindowTitle("시스템 사전 점검")
@@ -76,36 +80,49 @@ class StartupCheckDialog(QDialog):
         self.chzzk = chzzk_monitor
         self.youtube = youtube_monitor
         self.db = db_manager
+        
         self.use_chzzk = False
         self.use_youtube = False
+        
         self.check_finished_signal.connect(self._on_check_finished)
+
         layout = QVBoxLayout()
+        
         self.lbl_chzzk = QLabel("치지직 확인 중...")
         self.lbl_chzzk.setFont(QFont("NanumBarunGothic", 12))
         layout.addWidget(self.lbl_chzzk)
+
         self.lbl_yt = QLabel("유튜브 확인 중...")
         self.lbl_yt.setFont(QFont("NanumBarunGothic", 12))
         layout.addWidget(self.lbl_yt)
+        
         self.lbl_db = QLabel("DB 연결 확인 중...")
         self.lbl_db.setFont(QFont("NanumBarunGothic", 12))
         layout.addWidget(self.lbl_db)
+
         self.lbl_env = QLabel("환경변수(날짜) 확인 중...")
         self.lbl_env.setFont(QFont("NanumBarunGothic", 12))
         layout.addWidget(self.lbl_env)
+        
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         layout.addWidget(self.progress)
+        
         btn_layout = QHBoxLayout()
         self.btn_retry = QPushButton("다시 검사")
         self.btn_retry.clicked.connect(self.run_checks)
+        
         self.btn_next = QPushButton("다음 단계로")
         self.btn_next.clicked.connect(self.accept)
         self.btn_next.setEnabled(False) 
+        
         btn_layout.addWidget(self.btn_retry)
         btn_layout.addWidget(self.btn_next)
         layout.addLayout(btn_layout)
+        
         self.setLayout(layout)
         QTimer.singleShot(100, self.run_checks)
+
     def run_checks(self):
         self.progress.setRange(0, 0)
         self.btn_next.setEnabled(False)
@@ -116,6 +133,7 @@ class StartupCheckDialog(QDialog):
         for lbl in [self.lbl_chzzk, self.lbl_yt, self.lbl_db, self.lbl_env]:
             lbl.setStyleSheet("color: black;")
         threading.Thread(target=self._check_logic_thread, daemon=True).start()
+
     def _check_logic_thread(self):
         chzzk_ok, chzzk_msg = self.chzzk.check_live_status_sync()
         yt_ok, yt_msg = self.youtube.check_live_status_sync()
@@ -123,7 +141,8 @@ class StartupCheckDialog(QDialog):
         is_env_ok = False
         env_msg = ""
         env_date_str = os.getenv("db_reset_time")
-        if not env_date_str: env_msg = "환경변수(db_reset_time) 없음"
+        if not env_date_str:
+            env_msg = "환경변수(db_reset_time) 없음"
         else:
             try:
                 env_dt = datetime.strptime(env_date_str, "%Y.%m.%d %H:%M:%S")
@@ -132,11 +151,14 @@ class StartupCheckDialog(QDialog):
                 else:
                     env_msg = f"날짜 정상 ({env_date_str})"
                     is_env_ok = True
-            except ValueError: env_msg = f"날짜 형식 오류 ({env_date_str})"
+            except ValueError:
+                env_msg = f"날짜 형식 오류 ({env_date_str})"
         self.check_finished_signal.emit(chzzk_ok, chzzk_msg, yt_ok, yt_msg, is_db_ok, msg_db, is_env_ok, env_msg)
+
     def _on_check_finished(self, chzzk_ok, chzzk_msg, yt_ok, yt_msg, is_db_ok, msg_db, is_env_ok, env_msg):
         style_ok = "color: green; font-weight: bold;"
         style_no = "color: red; font-weight: bold;"
+        
         if chzzk_ok:
             self.lbl_chzzk.setText(f"✔ 치지직: {chzzk_msg}")
             self.lbl_chzzk.setStyleSheet(style_ok)
@@ -145,6 +167,7 @@ class StartupCheckDialog(QDialog):
             self.lbl_chzzk.setText(f"❌ 치지직: {chzzk_msg}")
             self.lbl_chzzk.setStyleSheet(style_no)
             self.use_chzzk = False
+
         if yt_ok:
             self.lbl_yt.setText(f"✔ 유튜브: {yt_msg}")
             self.lbl_yt.setStyleSheet(style_ok)
@@ -153,24 +176,28 @@ class StartupCheckDialog(QDialog):
             self.lbl_yt.setText(f"❌ 유튜브: {yt_msg}")
             self.lbl_yt.setStyleSheet(style_no)
             self.use_youtube = False
+
         if is_db_ok:
             self.lbl_db.setText(f"✔ DB 상태: {msg_db}")
             self.lbl_db.setStyleSheet(style_ok)
         else:
             self.lbl_db.setText(f"❌ DB 상태: {msg_db}")
             self.lbl_db.setStyleSheet(style_no)
+
         if is_env_ok:
             self.lbl_env.setText(f"✔ {env_msg}")
             self.lbl_env.setStyleSheet(style_ok)
         else:
             self.lbl_env.setText(f"❌ {env_msg}")
             self.lbl_env.setStyleSheet(style_no)
+
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
+
         if is_db_ok and is_env_ok and (self.use_chzzk or self.use_youtube):
             self.btn_next.setEnabled(True)
 
-# --- 2. 시작 단어 설정 다이얼로그 (변경 없음) ---
+# --- 2. 시작 단어 설정 다이얼로그 ---
 class StartWordOptionDialog(QDialog):
     def __init__(self):
         super().__init__()
@@ -211,7 +238,7 @@ class StartWordOptionDialog(QDialog):
         self.selected_mode = "RECENT"
         self.accept()
 
-# --- 콘솔 윈도우 (변경 없음) ---
+# --- 콘솔 윈도우 ---
 class ConsoleWindow(QWidget):
     def __init__(self, main_window):
         super().__init__()
@@ -240,7 +267,7 @@ class ConsoleWindow(QWidget):
         result_msg = self.main_window.command_manager.execute(cmd_full)
         if result_msg: self.log(result_msg)
 
-# --- 게임 종료 화면 위젯 (변경 없음) ---
+# --- 게임 종료 화면 위젯 ---
 class GameOverWidget(QWidget):
     def __init__(self):
         super().__init__()
@@ -304,6 +331,7 @@ class ChzzkGameGUI(QWidget):
         self.platform_status = {}
         self.is_global_offline = False
 
+        # 게임 상태 추적 변수
         self.current_fail_count = 0
         self.last_platform = None
         self.last_user = None
@@ -327,40 +355,9 @@ class ChzzkGameGUI(QWidget):
         self.timer.timeout.connect(self.update_runtime)
         self.timer.start(1000)
 
-    # [신규] 제어 메서드: 네트워크 중지
-    def stop_network(self):
-        self.chzzk_monitor.stop()
-        self.youtube_monitor.stop()
-        self.log_message("[시스템] 관리자 요청: 모든 방송 연결 종료 중...")
-        self.platform_status['치지직'] = False
-        self.platform_status['유튜브'] = False
-        self.handle_stream_offline("관리자_강제_종료") # 대기 모드 UI 전환
-
-    # [신규] 제어 메서드: 네트워크 재시작
-    def start_network(self):
-        self.log_message("[시스템] 관리자 요청: 방송 연결 재개 시도...")
-        # 모니터 객체 내부 플래그를 True로 돌리거나, 새로 run을 호출해야 함.
-        # run()은 이미 종료되었으므로 새로 Task를 만들어야 함.
-        self.chzzk_monitor.running = True
-        self.youtube_monitor.running = True
-        self.start_monitor_service() # 다시 실행
-
-    # [신규] 제어 메서드: 게임 일시정지 (답안 체크 중지)
-    def stop_game_logic(self):
-        self.answer_check_enabled = False
-        self.lbl_pause_status.show()
-        self.log_message("[시스템] 관리자 요청: 정답 체크 일시정지.")
-
-    # [신규] 제어 메서드: 게임 재개
-    def start_game_logic_resume(self):
-        self.answer_check_enabled = True
-        self.lbl_pause_status.hide()
-        self.log_message("[시스템] 관리자 요청: 정답 체크 재개.")
-
     def start_monitor_service(self):
         loop = asyncio.get_event_loop()
         if self.use_chzzk:
-            # 이미 실행중인지 체크는 어렵지만, stop() 후에는 안전함
             loop.create_task(self.chzzk_monitor.run())
             self.platform_status['치지직'] = False 
         
@@ -380,8 +377,6 @@ class ChzzkGameGUI(QWidget):
         if word_dlg.exec() == QDialog.DialogCode.Accepted:
             mode = word_dlg.selected_mode
             start_word = "시작"
-            last_winner = None # [신규] 최근 정답자 변수
-
             if mode == "INPUT":
                 text = word_dlg.input_text
                 if text and re.fullmatch(r'[가-힣]+', text):
@@ -389,20 +384,25 @@ class ChzzkGameGUI(QWidget):
             elif mode == "RANDOM":
                 start_word = self.db_manager.get_random_start_word()
             elif mode == "RECENT":
-                # [수정] 단어와 닉네임 함께 가져옴
-                start_word, last_winner = self.db_manager.get_last_used_word()
+                start_word = self.db_manager.get_last_used_word()
             
             self.start_monitor_service()
-            self.start_game_logic(start_word, restore_time=False, last_winner_nick=last_winner)
+            self.start_game_logic(start_word, restore_time=False)
         else:
             sys.exit()
 
     def closeEvent(self, event: QCloseEvent):
         shutdown_dlg = ShutdownDialog()
         shutdown_dlg.show()
+        
+        # 종료 시 게임 상태 저장
         self.db_manager.end_game_session(
-            self.current_fail_count, self.current_word_text, self.last_platform, self.last_user
+            self.current_fail_count,
+            self.current_word_text,
+            self.last_platform,
+            self.last_user
         )
+
         shutdown_dlg.set_status("로그 및 데이터 백업 중...")
         self.db_manager.export_all_data_to_csv()
         time.sleep(0.5) 
@@ -429,7 +429,8 @@ class ChzzkGameGUI(QWidget):
 
     def init_ui(self):
         self.setWindowTitle("치지직/유튜브 한국어 끝말잇기")
-        self.resize(1200, 700)
+        # [수정 1] 프로그램 실행 후 크기 고정 (불변)
+        self.setFixedSize(1200, 700)
         self.main_layout_container = QVBoxLayout(self)
         self.main_layout_container.setContentsMargins(0,0,0,0)
         self.stacked_widget = QStackedWidget()
@@ -528,6 +529,8 @@ class ChzzkGameGUI(QWidget):
         lbl_cw_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl_cw_title.setStyleSheet("color: #AAA;")
         self.lbl_current_word = QLabel("...")
+        # [수정 2] 라벨이 크기 확장을 요구하지 않도록 Policy 설정
+        self.lbl_current_word.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.lbl_current_word.setFont(QFont("NanumBarunGothic", 100, QFont.Weight.Bold))
         self.lbl_current_word.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_current_word.setStyleSheet("color: white;")
@@ -542,7 +545,8 @@ class ChzzkGameGUI(QWidget):
         self.lbl_next_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_next_hint.setStyleSheet("color: #888;")
         game_area.addWidget(lbl_cw_title)
-        game_area.addWidget(self.lbl_current_word)
+        # [수정 2-1] Policy가 Ignored여도 공간을 차지하도록 stretch 추가
+        game_area.addWidget(self.lbl_current_word, 1)
         game_area.addWidget(self.lbl_pause_status)
         game_area.addWidget(self.lbl_next_hint)
         game_area.addStretch(1)
@@ -595,35 +599,29 @@ class ChzzkGameGUI(QWidget):
         self.lbl_current_word.setFont(font)
         self.lbl_current_word.setText(formatted_text)
 
-    # [수정] last_winner_nick 인자 추가 및 처리
-    def start_game_logic(self, start_word, restore_time=False, last_winner_nick=None):
+    def start_game_logic(self, start_word, restore_time=False):
         self.start_time = time.time()
         self.current_word_text = start_word
         
+        # 게임 시작 시 카운트 리셋 및 DB 세션 시작
         self.current_fail_count = 0
         self.db_manager.start_new_game_session(start_word)
         
         self.set_responsive_text(start_word)
         self.lbl_current_word.repaint()     
         QApplication.processEvents()        
-        
         if restore_time:
             saved_str = os.getenv("last_word_change_time")
             if saved_str:
-                try: dt = datetime.strptime(saved_str, "%Y.%m.%d %H:%M:%S"); self.last_change_time = dt.timestamp()
+                try:
+                    dt = datetime.strptime(saved_str, "%Y.%m.%d %H:%M:%S")
+                    self.last_change_time = dt.timestamp()
                 except ValueError: self.last_change_time = time.time()
             else: self.last_change_time = time.time()
         else: self.last_change_time = time.time()
-        
         curr_dt_str = datetime.fromtimestamp(self.last_change_time).strftime("%Y.%m.%d %H:%M:%S")
         update_env_variable("last_word_change_time", curr_dt_str)
-
-        # [수정] 최근 정답자가 있으면 표시
-        if last_winner_nick:
-            self.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: {last_winner_nick}")
-        else:
-            self.lbl_last_winner.setText("현재 단어를 맞춘 사람: -")
-
+        self.lbl_last_winner.setText("현재 단어를 맞춘 사람: -")
         self.log_display.clear()
         self.answer_check_enabled = True
         self.lbl_pause_status.hide()
@@ -644,9 +642,12 @@ class ChzzkGameGUI(QWidget):
     def handle_stream_offline(self, platform_name):
         if platform_name in self.platform_status:
             self.platform_status[platform_name] = False
+        
         active_platforms = [p for p in self.platform_status.keys()]
         if not active_platforms: return 
+
         any_alive = any(self.platform_status.values())
+
         if not any_alive:
             if not self.is_global_offline:
                 self.is_global_offline = True
@@ -659,9 +660,11 @@ class ChzzkGameGUI(QWidget):
 
     def handle_stream_connected(self, platform_name):
         was_connected = self.platform_status.get(platform_name, False)
+        
         if not was_connected:
             self.log_message(f"[시스템] {platform_name} 방송 연결됨.")
             self.platform_status[platform_name] = True
+
         if self.is_global_offline:
             self.is_global_offline = False
             self.lbl_current_word.setStyleSheet("color: white;")
@@ -726,9 +729,17 @@ class ChzzkGameGUI(QWidget):
             return
 
         if len(word) < 1: return
+        
         if not re.fullmatch(r'[가-힣]+', word):
             self.current_fail_count += 1
             self.async_log_history(nickname, word, self.current_word_text, "Fail", "한글 아님")
+            return
+
+        # 한 글자 단어 처리: 사전 검사 전 즉시 규칙 위반으로 처리
+        if len(word) < 2:
+            self.current_fail_count += 1
+            self.async_log_history(nickname, word, self.current_word_text, "Fail", "한 글자")
+            self.log_message(f"[실패] {platform} - {nickname}: {word} (한 글자 금지)")
             return
 
         if self.current_word_text:
@@ -811,11 +822,19 @@ class ChzzkGameGUI(QWidget):
             elif result_status == "forbidden":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "금지어")
                 self.log_message(f"{fail_msg} (금지어)")
+            # 알 수 없는 오류(DB Error) 발생 시 입력 잠금 해제 처리
+            else:
+                self.log_message(f"[시스템 오류] {fail_msg} (DB 에러 발생)")
+                self.input_locked = False
 
     def process_game_over(self, last_word, last_winner):
         self.db_manager.end_game_session(
-            self.current_fail_count, last_word, self.last_platform, self.last_user
+            self.current_fail_count,
+            last_word,
+            self.last_platform,
+            self.last_user
         )
+        
         self.db_manager.export_all_data_to_csv()
         count = self.db_manager.get_used_word_count()
         today_str = datetime.now().strftime("%Y.%m.%d %H:%M:%S")
