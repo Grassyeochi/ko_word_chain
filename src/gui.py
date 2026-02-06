@@ -337,7 +337,11 @@ class ChzzkGameGUI(QWidget):
 
         self.db_reset_date = os.getenv("db_reset_time", "알 수 없음")
         self.input_locked = False
-        self.email_sent_flag = False
+        
+        # [수정] email_sent_flag는 호환성을 위해 유지하되, 실제 로직은 last_sent_hour 사용
+        self.email_sent_flag = False 
+        self.last_sent_hour = -1 
+        
         self.console_window = None
         self.answer_check_enabled = True
         
@@ -535,7 +539,7 @@ class ChzzkGameGUI(QWidget):
         lbl_cw_title.setStyleSheet("color: #AAA;")
         self.lbl_current_word = QLabel("...")
         self.lbl_current_word.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        # [수정] 기본 폰트 크기 100으로 시작
+        # [유지] 기본 폰트 크기 100
         self.lbl_current_word.setFont(QFont("NanumBarunGothic", 100, QFont.Weight.Bold))
         self.lbl_current_word.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_current_word.setStyleSheet("color: white;")
@@ -576,30 +580,24 @@ class ChzzkGameGUI(QWidget):
         self.log_display.append(message)
         self.log_display.verticalScrollBar().setValue(self.log_display.verticalScrollBar().maximum())
 
-    # [수정] 6글자 단위 줄바꿈 및 오버플로우 방지 로직 (Auto-Shrink)
+    # [유지] 6글자 단위 줄바꿈 및 오버플로우 방지 로직 (Auto-Shrink)
     def set_responsive_text(self, text):
         if not text: return
         length = len(text)
         
-        # 1. 6글자 단위로 텍스트 분할 (무조건)
         chunk_size = 6
         chunks = [text[i:i+chunk_size] for i in range(0, length, chunk_size)]
         formatted_text = "\n".join(chunks)
         num_lines = len(chunks)
 
-        # 2. 시작 폰트 크기 설정 (기존보다 더 보수적으로 잡음)
         if num_lines == 1: target_size = 100
         elif num_lines == 2: target_size = 65 
         elif num_lines == 3: target_size = 45 
         else: target_size = 30
         
-        # 3. 오버플로우 방지 로직 (Auto-Shrink)
-        # 라벨의 현재 크기를 가져옵니다.
         label_w = self.lbl_current_word.width()
         label_h = self.lbl_current_word.height()
         
-        # 윈도우가 아직 안 떠서 크기가 0일 경우, 고정된 크기(1200x700) 기반으로 대략적인 가용 영역 추정
-        # 레이아웃 비율이 3:5 정도 되므로 높이는 대략 300~400px, 너비는 600px 정도 예상
         if label_w < 10 or label_h < 10:
             label_w = 600
             label_h = 300
@@ -608,11 +606,8 @@ class ChzzkGameGUI(QWidget):
         font.setPointSize(target_size)
         fm = QFontMetrics(font)
         
-        # 텍스트가 들어갈 영역 계산 (Padding 고려)
-        # boundingRect(rect, flags, text) 사용 시 정렬 플래그 포함
         bound_rect = fm.boundingRect(0, 0, label_w, label_h, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, formatted_text)
         
-        # 영역을 벗어나면 폰트 크기 줄이기 루프 (최소 10pt까지)
         while (bound_rect.height() > label_h or bound_rect.width() > label_w) and target_size > 10:
             target_size -= 5
             font.setPointSize(target_size)
@@ -716,9 +711,12 @@ class ChzzkGameGUI(QWidget):
         self.lbl_runtime.setText(f"{start_str} - {str(total_delta)}")
         word_elapsed = now_ts - self.last_change_time
         self.lbl_word_elapsed.setText(str(timedelta(seconds=int(word_elapsed))))
-        if word_elapsed > 3600 and not self.email_sent_flag:
-            self.email_sent_flag = True
-            self.async_log_system(6, "Game", "1시간 경과, 메일 발송 시도")
+        
+        # [수정] 메일 발송 로직 변경: 1시간 경과가 아닌 매 시 정각(XX:00)에 발송
+        now = datetime.now()
+        if now.minute == 0 and self.last_sent_hour != now.hour:
+            self.last_sent_hour = now.hour
+            self.async_log_system(6, "Game", f"정각({now.hour}시) 알림 메일 발송")
             threading.Thread(target=self.thread_send_mail).start()
 
     def thread_send_mail(self):
