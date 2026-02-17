@@ -41,8 +41,8 @@ def exception_hook(exctype, value, tb):
 
 sys.excepthook = exception_hook
 
-# --- 0. 종료 알림 다이얼로그 ---
 class ShutdownDialog(QDialog):
+    # (이전 코드와 동일 - 생략 없이 파일 저장 시 포함 요망)
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
@@ -69,8 +69,8 @@ class ShutdownDialog(QDialog):
         self.lbl_status.setText(text)
         QApplication.processEvents()
 
-# --- 1. 시스템 사전 점검 다이얼로그 ---
 class StartupCheckDialog(QDialog):
+    # (이전 코드와 동일)
     check_finished_signal = pyqtSignal(bool, str, bool, str, bool, str, bool, str)
 
     def __init__(self, chzzk_monitor, youtube_monitor, db_manager):
@@ -197,7 +197,6 @@ class StartupCheckDialog(QDialog):
         if is_db_ok and is_env_ok and (self.use_chzzk or self.use_youtube):
             self.btn_next.setEnabled(True)
 
-# --- 2. 시작 단어 설정 다이얼로그 ---
 class StartWordOptionDialog(QDialog):
     def __init__(self):
         super().__init__()
@@ -238,7 +237,6 @@ class StartWordOptionDialog(QDialog):
         self.selected_mode = "RECENT"
         self.accept()
 
-# --- 콘솔 윈도우 ---
 class ConsoleWindow(QWidget):
     def __init__(self, main_window):
         super().__init__()
@@ -267,7 +265,6 @@ class ConsoleWindow(QWidget):
         result_msg = self.main_window.command_manager.execute(cmd_full)
         if result_msg: self.log(result_msg)
 
-# --- 게임 종료 화면 위젯 ---
 class GameOverWidget(QWidget):
     def __init__(self):
         super().__init__()
@@ -310,7 +307,6 @@ class GameOverWidget(QWidget):
     def update_countdown(self, seconds):
         self.lbl_countdown.setText(f"{seconds}초 후에 다시 시작합니다....")
 
-# --- 메인 게임 GUI ---
 class ChzzkGameGUI(QWidget):
     def __init__(self):
         super().__init__()
@@ -338,7 +334,6 @@ class ChzzkGameGUI(QWidget):
         self.db_reset_date = os.getenv("db_reset_time", "알 수 없음")
         self.input_locked = False
         
-        # [수정] email_sent_flag는 호환성을 위해 유지하되, 실제 로직은 last_sent_hour 사용
         self.email_sent_flag = False 
         self.last_sent_hour = -1 
         
@@ -455,7 +450,6 @@ class ChzzkGameGUI(QWidget):
         main_layout = QHBoxLayout() 
         main_layout.setContentsMargins(30, 30, 30, 30)
         main_layout.setSpacing(30)
-        # Left
         left_layout = QVBoxLayout()
         self.title_label = QLabel("한국어 끝말잇기")
         self.title_label.setFont(QFont("NanumBarunGothic", 50, QFont.Weight.Bold))
@@ -486,7 +480,6 @@ class ChzzkGameGUI(QWidget):
         """)
         self.btn_console.clicked.connect(self.open_console)
         left_layout.addWidget(self.btn_console)
-        # Right
         right_layout = QVBoxLayout()
         info_grid = QGridLayout()
         info_grid.setSpacing(15)
@@ -539,7 +532,6 @@ class ChzzkGameGUI(QWidget):
         lbl_cw_title.setStyleSheet("color: #AAA;")
         self.lbl_current_word = QLabel("...")
         self.lbl_current_word.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        # [유지] 기본 폰트 크기 100
         self.lbl_current_word.setFont(QFont("NanumBarunGothic", 100, QFont.Weight.Bold))
         self.lbl_current_word.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_current_word.setStyleSheet("color: white;")
@@ -555,7 +547,6 @@ class ChzzkGameGUI(QWidget):
         self.lbl_next_hint.setStyleSheet("color: #888;")
         game_area.addWidget(lbl_cw_title)
         
-        # [유지] 공간 확보를 위해 비율 3 적용
         game_area.addWidget(self.lbl_current_word, 3)
         
         game_area.addWidget(self.lbl_pause_status)
@@ -580,7 +571,6 @@ class ChzzkGameGUI(QWidget):
         self.log_display.append(message)
         self.log_display.verticalScrollBar().setValue(self.log_display.verticalScrollBar().maximum())
 
-    # [유지] 6글자 단위 줄바꿈 및 오버플로우 방지 로직 (Auto-Shrink)
     def set_responsive_text(self, text):
         if not text: return
         length = len(text)
@@ -712,15 +702,15 @@ class ChzzkGameGUI(QWidget):
         word_elapsed = now_ts - self.last_change_time
         self.lbl_word_elapsed.setText(str(timedelta(seconds=int(word_elapsed))))
         
-        # [수정] 메일 발송 로직 변경: 1시간 경과가 아닌 매 시 정각(XX:00)에 발송
         now = datetime.now()
         if now.minute == 0 and self.last_sent_hour != now.hour:
             self.last_sent_hour = now.hour
             self.async_log_system(6, "Game", f"정각({now.hour}시) 알림 메일 발송")
             threading.Thread(target=self.thread_send_mail).start()
 
+    # [수정] 메일 발송 시 current_word_text와 last_user를 전달
     def thread_send_mail(self):
-        success, msg = send_alert_email(self.current_word_text)
+        success, msg = send_alert_email(self.current_word_text, self.last_user)
         if success: self.async_log_system(1, "Mail", "알림 메일 발송 성공")
         else: self.async_log_system(8, "Mail", "메일 발송 실패", msg)
 
@@ -772,7 +762,8 @@ class ChzzkGameGUI(QWidget):
             if first_char not in valid_starts:
                 self.current_fail_count += 1
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "규칙 위반")
-                self.log_message(f"[실패] {platform} - {nickname}: {word} (초성 불일치)")
+                # [수정] 초성 불일치 로그 출력 형식 변경
+                self.log_message(f"[실패] {platform} - {nickname}: {word} [초성 불일치]")
                 return
 
         self.input_locked = True
@@ -831,20 +822,21 @@ class ChzzkGameGUI(QWidget):
             self.current_fail_count += 1
             fail_msg = f"[실패] {platform} - {nickname}: {word}"
             
+            # [수정] 지시하신 요구사항에 맞춰 오류 메시지 텍스트 변경
             if result_status == "unavailable":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "부적절")
-                self.log_message(f"{fail_msg} (사전에 없음)") 
+                self.log_message(f"{fail_msg} [단어장에 없음]") 
                 threading.Thread(target=handle_violation_alert, args=(nickname, word)).start()
             elif result_status == "not_found":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "사전없음")
-                self.log_message(f"{fail_msg} (사전에 없음)")
+                self.log_message(f"{fail_msg} [단어장에 없음]")
                 threading.Thread(target=log_unknown_word, args=(word,)).start()
-            elif result_status == "used":
-                self.async_log_history(nickname, word, self.current_word_text, "Fail", "이미사용")
-                self.log_message(f"{fail_msg} (이미 사용됨)")
             elif result_status == "forbidden":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "금지어")
-                self.log_message(f"{fail_msg} (금지어)")
+                self.log_message(f"{fail_msg} [금지됨]")
+            elif result_status == "used":
+                self.async_log_history(nickname, word, self.current_word_text, "Fail", "이미사용")
+                self.log_message(f"{fail_msg} [이미 사용됨]")
             else:
                 self.log_message(f"[시스템 오류] {fail_msg} (DB 에러 발생)")
                 self.input_locked = False

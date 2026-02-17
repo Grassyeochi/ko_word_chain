@@ -16,7 +16,6 @@ class DatabaseManager:
         self.conn = None
         self.lock = threading.Lock() 
         
-        # 현재 진행 중인 게임의 고유 번호 (game_status.num)
         self.current_game_id = None
         
         self.connect()
@@ -57,9 +56,6 @@ class DatabaseManager:
             self.connect()
 
     def start_new_game_session(self, start_word):
-        """
-        새로운 게임 시작 시 game_status 테이블에 기록하고 ID를 저장
-        """
         with self.lock:
             self._ensure_connection()
             if not self.conn: return
@@ -73,9 +69,6 @@ class DatabaseManager:
                 print(f"[오류] 게임 세션 시작 실패: {e}")
 
     def end_game_session(self, fail_count, end_word, end_platform, end_user):
-        """
-        게임 종료 또는 프로그램 종료 시 현재 게임 정보를 업데이트
-        """
         if self.current_game_id is None:
             return
 
@@ -119,20 +112,25 @@ class DatabaseManager:
                     cursor.execute(sql_check, (word,))
                     result = cursor.fetchone()
 
+                    # 1. 단어장에 없는 단어
                     if not result: 
                         return "not_found"
 
                     pk_num, is_use, can_use, available = result
 
+                    # [수정] 2. available이 False
                     if not available:
                         return "unavailable"
 
-                    if is_use: 
-                        return "used"
-
+                    # [수정] 3. can_use가 False
                     if not can_use: 
                         return "forbidden"
 
+                    # [수정] 4. is_use가 True
+                    if is_use: 
+                        return "used"
+
+                    # 모든 조건을 통과하면 정답 처리
                     sql_update = """
                         UPDATE ko_word 
                         SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s
@@ -188,9 +186,6 @@ class DatabaseManager:
                 return False, str(e)
 
     def get_last_used_word(self):
-        """
-        가장 최근에 사용된 단어 반환 (튜플 형태: word, user)
-        """
         with self.lock:
             self._ensure_connection()
             if not self.conn: return ("시작", None)
@@ -282,7 +277,6 @@ class DatabaseManager:
             if not self.conn: return False
             try:
                 with self.conn.cursor() as cursor:
-                    # start_char가 포함된 LIKE 검색을 위해 파라미터 바인딩 주의
                     sql = "SELECT count(*) FROM ko_word WHERE word LIKE %s AND is_use = FALSE AND can_use = TRUE AND available = TRUE"
                     cursor.execute(sql, (start_char + "%",))
                     count = cursor.fetchone()[0]
@@ -305,7 +299,6 @@ class DatabaseManager:
                 print(f"[오류] 랜덤 단어 조회 실패: {e}")
                 return "시작"
 
-    # [중요] 이 메서드가 없어서 오류가 발생했습니다. 반드시 포함시켜 주세요.
     def admin_force_use_word(self, word, nickname="console-admin"):
         with self.lock:
             self._ensure_connection()
