@@ -223,7 +223,7 @@ def apply_dueum_rule(char):
     
     return variations
 
-# [수정] 메일 발송 내용 변경 및 인자 추가
+# [수정 1] 정시 발송 메일 문구 변경
 def send_alert_email(current_word, current_winner):
     smtp_server = os.getenv("MAIL_SERVER", "smtp.naver.com")
     smtp_port = int(os.getenv("MAIL_PORT", 465))
@@ -239,10 +239,40 @@ def send_alert_email(current_word, current_winner):
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         winner_text = current_winner if current_winner else "없음"
         
-        body_text = f"{current_time} : [{winner_text}]{current_word} 로 게임 지속중"
+        body_text = f"현재 시간 {current_time} 에 {winner_text} 이/가 {current_word} (으)로 진행 중"
         msg = MIMEText(body_text)
         
-        msg['Subject'] = "[알림] 끝말잇기 게임 1시간 경과"
+        msg['Subject'] = "[알림] 끝말잇기 게임 1시간 정시 알림"
+        msg['From'] = sender
+        msg['To'] = receiver
+
+        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+            server.login(sender, password)
+            server.send_message(msg)
+        
+        return True, "발송 성공"
+    except Exception as e:
+        return False, str(e)
+
+# [수정 2] 희귀 끝단어 감지 메일 발송 함수 추가
+def send_rare_word_email(current_word, current_winner):
+    smtp_server = os.getenv("MAIL_SERVER", "smtp.naver.com")
+    smtp_port = int(os.getenv("MAIL_PORT", 465))
+    sender = os.getenv("MAIL_SENDER")
+    password = os.getenv("MAIL_PASSWORD")
+    receiver = os.getenv("MAIL_RECEIVER")
+
+    if not (sender and password and receiver):
+        return False, "설정 누락"
+
+    try:
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        winner_text = current_winner if current_winner else "없음"
+        
+        body_text = f"현재 시간 {current_time} 에 {winner_text} 이/가 {current_word} (으)로 희귀끝단어 입력"
+        msg = MIMEText(body_text)
+        
+        msg['Subject'] = "[알림] 희귀 끝단어 감지"
         msg['From'] = sender
         msg['To'] = receiver
 

@@ -21,7 +21,8 @@ from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from .signals import GameSignals
 from .database import DatabaseManager
 from .network import ChzzkMonitor, YouTubeMonitor
-from .utils import apply_dueum_rule, send_alert_email, ProfanityFilter, update_env_variable, log_unknown_word, handle_violation_alert, send_crash_report_email
+# [수정] send_rare_word_email import 추가
+from .utils import apply_dueum_rule, send_alert_email, send_rare_word_email, ProfanityFilter, update_env_variable, log_unknown_word, handle_violation_alert, send_crash_report_email
 from .commands import CommandManager
 
 def resource_path(relative_path):
@@ -42,7 +43,6 @@ def exception_hook(exctype, value, tb):
 sys.excepthook = exception_hook
 
 class ShutdownDialog(QDialog):
-    # (이전 코드와 동일 - 생략 없이 파일 저장 시 포함 요망)
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
@@ -70,7 +70,6 @@ class ShutdownDialog(QDialog):
         QApplication.processEvents()
 
 class StartupCheckDialog(QDialog):
-    # (이전 코드와 동일)
     check_finished_signal = pyqtSignal(bool, str, bool, str, bool, str, bool, str)
 
     def __init__(self, chzzk_monitor, youtube_monitor, db_manager):
@@ -708,7 +707,6 @@ class ChzzkGameGUI(QWidget):
             self.async_log_system(6, "Game", f"정각({now.hour}시) 알림 메일 발송")
             threading.Thread(target=self.thread_send_mail).start()
 
-    # [수정] 메일 발송 시 current_word_text와 last_user를 전달
     def thread_send_mail(self):
         success, msg = send_alert_email(self.current_word_text, self.last_user)
         if success: self.async_log_system(1, "Mail", "알림 메일 발송 성공")
@@ -733,6 +731,20 @@ class ChzzkGameGUI(QWidget):
             self.player.stop()
         self.player.play()
 
+    # [신규] 희귀 끝단어 감지 후 메일 발송 메서드 추가
+    def _check_and_send_rare_word(self, word, nickname):
+        if not word: return
+        last_char = word[-1]
+        count = self.db_manager.check_rare_end_word(last_char)
+        
+        # 10 이하일 때 희귀 메일 발송
+        if count != -1 and count <= 10:
+            success, msg = send_rare_word_email(word, nickname)
+            if success:
+                self.async_log_system(1, "Mail", f"희귀단어 알림 메일 발송 ({word}, 남은 수: {count})")
+            else:
+                self.async_log_system(8, "Mail", "희귀단어 알림 메일 발송 실패", msg)
+
     def handle_new_word(self, platform, nickname, word):
         if self.input_locked: return
         if self.stacked_widget.currentIndex() == 1: return
@@ -755,6 +767,7 @@ class ChzzkGameGUI(QWidget):
             self.async_log_history(nickname, word, self.current_word_text, "Fail", "한글 아님")
             return
 
+        # [수정] 1. 초성 불일치 로그 출력 형식 요구사항 반영
         if self.current_word_text:
             last_char = self.current_word_text[-1]
             first_char = word[0]
@@ -762,7 +775,6 @@ class ChzzkGameGUI(QWidget):
             if first_char not in valid_starts:
                 self.current_fail_count += 1
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "규칙 위반")
-                # [수정] 초성 불일치 로그 출력 형식 변경
                 self.log_message(f"[실패] {platform} - {nickname}: {word} [초성 불일치]")
                 return
 
@@ -800,6 +812,9 @@ class ChzzkGameGUI(QWidget):
             self.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: {display_str}")
             self.log_message(f"[성공] {platform} - {nickname}: {word}")
 
+            # [추가] 정답일 경우 백그라운드에서 희귀 끝단어 메일 발송 검증
+            threading.Thread(target=self._check_and_send_rare_word, args=(word, nickname)).start()
+
             self.current_word_text = word
             self.set_responsive_text(word)
             
@@ -822,15 +837,15 @@ class ChzzkGameGUI(QWidget):
             self.current_fail_count += 1
             fail_msg = f"[실패] {platform} - {nickname}: {word}"
             
-            # [수정] 지시하신 요구사항에 맞춰 오류 메시지 텍스트 변경
-            if result_status == "unavailable":
-                self.async_log_history(nickname, word, self.current_word_text, "Fail", "부적절")
-                self.log_message(f"{fail_msg} [단어장에 없음]") 
-                threading.Thread(target=handle_violation_alert, args=(nickname, word)).start()
-            elif result_status == "not_found":
+            # [수정] 오답 메시지 포맷과 우선순위 적용
+            if result_status == "not_found":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "사전없음")
                 self.log_message(f"{fail_msg} [단어장에 없음]")
                 threading.Thread(target=log_unknown_word, args=(word,)).start()
+            elif result_status == "unavailable":
+                self.async_log_history(nickname, word, self.current_word_text, "Fail", "부적절")
+                self.log_message(f"{fail_msg} [단어장에 없음]") 
+                threading.Thread(target=handle_violation_alert, args=(nickname, word)).start()
             elif result_status == "forbidden":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "금지어")
                 self.log_message(f"{fail_msg} [금지됨]")

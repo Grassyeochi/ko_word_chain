@@ -112,25 +112,20 @@ class DatabaseManager:
                     cursor.execute(sql_check, (word,))
                     result = cursor.fetchone()
 
-                    # 1. 단어장에 없는 단어
                     if not result: 
                         return "not_found"
 
                     pk_num, is_use, can_use, available = result
 
-                    # [수정] 2. available이 False
                     if not available:
                         return "unavailable"
 
-                    # [수정] 3. can_use가 False
                     if not can_use: 
                         return "forbidden"
 
-                    # [수정] 4. is_use가 True
                     if is_use: 
                         return "used"
 
-                    # 모든 조건을 통과하면 정답 처리
                     sql_update = """
                         UPDATE ko_word 
                         SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s
@@ -145,7 +140,26 @@ class DatabaseManager:
             except Exception as e:
                 print(f"[오류] 단어 검증 에러: {e}")
                 return "error"
-    
+
+    # [수정 2] 희귀 끝단어 확인 쿼리 메서드 추가
+    def check_rare_end_word(self, end_char):
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return -1
+            try:
+                with self.conn.cursor() as cursor:
+                    sql = """
+                        SELECT count(*) FROM ko_word 
+                        WHERE end_char = %s 
+                        AND source NOT IN ('movie', 'medicine', 'company', 'food')
+                    """
+                    cursor.execute(sql, (end_char,))
+                    count = cursor.fetchone()[0]
+                    return count
+            except Exception as e:
+                print(f"[오류] 희귀끝단어 확인 에러: {e}")
+                return -1
+
     def get_used_word_count(self):
         with self.lock:
             self._ensure_connection()
