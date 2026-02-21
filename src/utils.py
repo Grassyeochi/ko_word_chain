@@ -79,14 +79,17 @@ def log_unknown_word(word):
 
 def handle_violation_alert(nickname, word):
     record_file = "violation_users.txt"
-    if os.path.exists(record_file):
-        try:
-            with open(record_file, "r", encoding="utf-8") as f:
-                sent_users = [line.strip() for line in f.readlines()]
-                if nickname in sent_users:
-                    return False
-        except Exception:
-            pass
+    
+    # [수정] 파일 읽기 시 락 적용
+    with file_lock:
+        if os.path.exists(record_file):
+            try:
+                with open(record_file, "r", encoding="utf-8") as f:
+                    sent_users = [line.strip() for line in f.readlines()]
+                    if nickname in sent_users:
+                        return False
+            except Exception:
+                pass
 
     smtp_server = os.getenv("MAIL_SERVER", "smtp.naver.com")
     smtp_port = int(os.getenv("MAIL_PORT", 465))
@@ -113,11 +116,13 @@ def handle_violation_alert(nickname, word):
             server.login(sender, password)
             server.send_message(msg)
         
-        try:
-            with open(record_file, "a", encoding="utf-8") as f:
-                f.write(f"{nickname}\n")
-        except:
-            pass
+        # [수정] 파일 쓰기 시 락 적용
+        with file_lock:
+            try:
+                with open(record_file, "a", encoding="utf-8") as f:
+                    f.write(f"{nickname}\n")
+            except:
+                pass
         return True
     except Exception as e:
         print(f"[오류] 경고 메일 발송 실패: {e}")
@@ -223,7 +228,6 @@ def apply_dueum_rule(char):
     
     return variations
 
-# [수정 1] 정시 발송 메일 문구 변경
 def send_alert_email(current_word, current_winner):
     smtp_server = os.getenv("MAIL_SERVER", "smtp.naver.com")
     smtp_port = int(os.getenv("MAIL_PORT", 465))
@@ -254,7 +258,6 @@ def send_alert_email(current_word, current_winner):
     except Exception as e:
         return False, str(e)
 
-# [수정 2] 희귀 끝단어 감지 메일 발송 함수 추가
 def send_rare_word_email(current_word, current_winner):
     smtp_server = os.getenv("MAIL_SERVER", "smtp.naver.com")
     smtp_port = int(os.getenv("MAIL_PORT", 465))
@@ -273,6 +276,35 @@ def send_rare_word_email(current_word, current_winner):
         msg = MIMEText(body_text)
         
         msg['Subject'] = "[알림] 희귀 끝단어 감지"
+        msg['From'] = sender
+        msg['To'] = receiver
+
+        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+            server.login(sender, password)
+            server.send_message(msg)
+        
+        return True, "발송 성공"
+    except Exception as e:
+        return False, str(e)
+
+def send_game_start_email(start_word, start_user):
+    smtp_server = os.getenv("MAIL_SERVER", "smtp.naver.com")
+    smtp_port = int(os.getenv("MAIL_PORT", 465))
+    sender = os.getenv("MAIL_SENDER")
+    password = os.getenv("MAIL_PASSWORD")
+    receiver = os.getenv("MAIL_RECEIVER")
+
+    if not (sender and password and receiver):
+        return False, "설정 누락"
+
+    try:
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        winner_text = start_user if start_user else "없음"
+        
+        body_text = f"현재 시간 {current_time} 에 {winner_text} 이/가 {start_word} (으)로 게임을 시작했습니다."
+        msg = MIMEText(body_text)
+        
+        msg['Subject'] = "[알림] 끝말잇기 게임 시작"
         msg['From'] = sender
         msg['To'] = receiver
 

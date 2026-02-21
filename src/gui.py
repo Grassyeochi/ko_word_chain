@@ -4,11 +4,12 @@ import os
 import time
 import re
 import asyncio
-import threading
 import math
 import unicodedata
 import traceback 
 from datetime import datetime, timedelta
+# [수정] 스레드 최적화를 위해 ThreadPoolExecutor 임포트
+from concurrent.futures import ThreadPoolExecutor
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QFrame, QSizePolicy, QMessageBox, QGridLayout,
@@ -21,8 +22,7 @@ from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from .signals import GameSignals
 from .database import DatabaseManager
 from .network import ChzzkMonitor, YouTubeMonitor
-# [수정] send_rare_word_email import 추가
-from .utils import apply_dueum_rule, send_alert_email, send_rare_word_email, ProfanityFilter, update_env_variable, log_unknown_word, handle_violation_alert, send_crash_report_email
+from .utils import apply_dueum_rule, send_alert_email, send_rare_word_email, send_game_start_email, ProfanityFilter, update_env_variable, log_unknown_word, handle_violation_alert, send_crash_report_email
 from .commands import CommandManager
 
 def resource_path(relative_path):
@@ -83,6 +83,9 @@ class StartupCheckDialog(QDialog):
         self.use_chzzk = False
         self.use_youtube = False
         
+        # [수정] 스레드 풀 임시 사용
+        self.temp_pool = ThreadPoolExecutor(max_workers=1)
+        
         self.check_finished_signal.connect(self._on_check_finished)
 
         layout = QVBoxLayout()
@@ -131,7 +134,7 @@ class StartupCheckDialog(QDialog):
         self.lbl_env.setText("환경변수(날짜) 확인 중...")
         for lbl in [self.lbl_chzzk, self.lbl_yt, self.lbl_db, self.lbl_env]:
             lbl.setStyleSheet("color: black;")
-        threading.Thread(target=self._check_logic_thread, daemon=True).start()
+        self.temp_pool.submit(self._check_logic_thread)
 
     def _check_logic_thread(self):
         chzzk_ok, chzzk_msg = self.chzzk.check_live_status_sync()
@@ -309,6 +312,9 @@ class GameOverWidget(QWidget):
 class ChzzkGameGUI(QWidget):
     def __init__(self):
         super().__init__()
+        # [수정] 스레드 남용을 막기 위한 스레드 풀(Thread Pool) 초기화
+        self.thread_pool = ThreadPoolExecutor(max_workers=10)
+        
         self.signals = GameSignals()
         self.chzzk_monitor = ChzzkMonitor(self.signals)
         self.youtube_monitor = YouTubeMonitor(self.signals)
@@ -365,6 +371,7 @@ class ChzzkGameGUI(QWidget):
     def run_startup_sequence(self):
         check_dlg = StartupCheckDialog(self.chzzk_monitor, self.youtube_monitor, self.db_manager)
         if check_dlg.exec() != QDialog.DialogCode.Accepted:
+            self.thread_pool.shutdown(wait=False)
             sys.exit() 
         
         self.use_chzzk = check_dlg.use_chzzk
@@ -394,6 +401,7 @@ class ChzzkGameGUI(QWidget):
             self.start_monitor_service()
             self.start_game_logic(start_word, start_user=start_user, restore_time=False)
         else:
+            self.thread_pool.shutdown(wait=False)
             sys.exit()
 
     def closeEvent(self, event: QCloseEvent):
@@ -410,6 +418,10 @@ class ChzzkGameGUI(QWidget):
         shutdown_dlg.set_status("로그 및 데이터 백업 중...")
         self.db_manager.export_all_data_to_csv()
         time.sleep(0.5) 
+        
+        # [수정] 스레드 풀 안전 종료
+        self.thread_pool.shutdown(wait=False)
+        
         shutdown_dlg.set_status("데이터베이스 연결 해제 중...")
         if self.db_manager.conn:
             try: self.db_manager.conn.close()
@@ -606,6 +618,13 @@ class ChzzkGameGUI(QWidget):
         self.lbl_current_word.setFont(font)
         self.lbl_current_word.setText(formatted_text)
 
+    def _send_start_email_bg(self, word, user):
+        success, msg = send_game_start_email(word, user)
+        if success:
+            self.async_log_system(1, "Mail", "게임 시작 알림 메일 발송 성공")
+        else:
+            self.async_log_system(8, "Mail", "게임 시작 알림 메일 발송 실패", msg)
+
     def start_game_logic(self, start_word, start_user=None, restore_time=False):
         if isinstance(start_word, (tuple, list)):
             if start_word:
@@ -648,6 +667,9 @@ class ChzzkGameGUI(QWidget):
         self.update_hint(start_word[-1])
         self.log_message(f"[시스템] 게임 시작! 시작 단어: {start_word}")
 
+        # [수정] 스레드 풀 사용
+        self.thread_pool.submit(self._send_start_email_bg, start_word, start_user)
+
     def setup_connections(self):
         self.signals.word_detected.connect(self.handle_new_word)
         self.signals.stream_offline.connect(self.handle_stream_offline)
@@ -670,7 +692,13 @@ class ChzzkGameGUI(QWidget):
                 self.is_global_offline = True
                 self.async_log_system(10, "Game", "모든 방송 연결 끊김. 대기 모드 진입.")
                 self.lbl_current_word.setText("방송 연결 대기 중...")
-                self.lbl_current_word.setStyleSheet("color: orange; font-size: 50px;")
+                
+                # [수정] 폰트 크기 충돌 버그 방지를 위해 setFont 사용
+                self.lbl_current_word.setStyleSheet("color: orange;")
+                font = self.lbl_current_word.font()
+                font.setPointSize(50)
+                self.lbl_current_word.setFont(font)
+                
                 self.log_message("[시스템] 모든 방송 연결이 끊겼습니다. 재접속 대기 중...")
         else:
             self.log_message(f"[시스템] {platform_name} 연결 불안정. 재접속 시도 중...")
@@ -705,7 +733,8 @@ class ChzzkGameGUI(QWidget):
         if now.minute == 0 and self.last_sent_hour != now.hour:
             self.last_sent_hour = now.hour
             self.async_log_system(6, "Game", f"정각({now.hour}시) 알림 메일 발송")
-            threading.Thread(target=self.thread_send_mail).start()
+            # [수정] 스레드 풀 사용
+            self.thread_pool.submit(self.thread_send_mail)
 
     def thread_send_mail(self):
         success, msg = send_alert_email(self.current_word_text, self.last_user)
@@ -721,23 +750,23 @@ class ChzzkGameGUI(QWidget):
         self.input_locked = False
 
     def async_log_system(self, level, source, message, trace=None):
-        threading.Thread(target=self.db_manager.log_system, args=(level, source, message, trace)).start()
+        # [수정] 스레드 풀 사용
+        self.thread_pool.submit(self.db_manager.log_system, level, source, message, trace)
 
     def async_log_history(self, nickname, input_word, previous_word, status, reason=None):
-        threading.Thread(target=self.db_manager.log_history, args=(nickname, input_word, previous_word, status, reason)).start()
+        # [수정] 스레드 풀 사용
+        self.thread_pool.submit(self.db_manager.log_history, nickname, input_word, previous_word, status, reason)
     
     def play_success_sound(self):
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.player.stop()
         self.player.play()
 
-    # [신규] 희귀 끝단어 감지 후 메일 발송 메서드 추가
     def _check_and_send_rare_word(self, word, nickname):
         if not word: return
         last_char = word[-1]
         count = self.db_manager.check_rare_end_word(last_char)
         
-        # 10 이하일 때 희귀 메일 발송
         if count != -1 and count <= 10:
             success, msg = send_rare_word_email(word, nickname)
             if success:
@@ -758,16 +787,22 @@ class ChzzkGameGUI(QWidget):
             self.current_fail_count += 1
             self.log_message(f"[차단] {platform} - {nickname}: {word} (금지어: {bad_word})")
             self.async_log_history(nickname, word, self.current_word_text, "Fail", f"금지어({bad_word})")
-            threading.Thread(target=self.db_manager.mark_word_as_forbidden, args=(word,)).start()
+            # [수정] 스레드 풀 사용
+            self.thread_pool.submit(self.db_manager.mark_word_as_forbidden, word)
             return
 
-        if len(word) < 1: return
+        # [수정] 1글자 단어 허점 완벽 차단 로직 적용 (< 1 에서 < 2로 변경)
+        if len(word) < 2: 
+            self.current_fail_count += 1
+            self.async_log_history(nickname, word, self.current_word_text, "Fail", "한 글자")
+            self.log_message(f"[실패] {platform} - {nickname}: {word} [한 글자 금지]")
+            return
+            
         if not re.fullmatch(r'[가-힣]+', word):
             self.current_fail_count += 1
             self.async_log_history(nickname, word, self.current_word_text, "Fail", "한글 아님")
             return
 
-        # [수정] 1. 초성 불일치 로그 출력 형식 요구사항 반영
         if self.current_word_text:
             last_char = self.current_word_text[-1]
             first_char = word[0]
@@ -780,7 +815,8 @@ class ChzzkGameGUI(QWidget):
 
         self.input_locked = True
         
-        threading.Thread(target=self._bg_check_word, args=(platform, word, nickname)).start()
+        # [수정] 스레드 풀 사용
+        self.thread_pool.submit(self._bg_check_word, platform, word, nickname)
 
     def _bg_check_word(self, platform, word, nickname):
         result = self.db_manager.check_and_use_word(word, nickname)
@@ -812,8 +848,8 @@ class ChzzkGameGUI(QWidget):
             self.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: {display_str}")
             self.log_message(f"[성공] {platform} - {nickname}: {word}")
 
-            # [추가] 정답일 경우 백그라운드에서 희귀 끝단어 메일 발송 검증
-            threading.Thread(target=self._check_and_send_rare_word, args=(word, nickname)).start()
+            # [수정] 스레드 풀 사용
+            self.thread_pool.submit(self._check_and_send_rare_word, word, nickname)
 
             self.current_word_text = word
             self.set_responsive_text(word)
@@ -837,15 +873,16 @@ class ChzzkGameGUI(QWidget):
             self.current_fail_count += 1
             fail_msg = f"[실패] {platform} - {nickname}: {word}"
             
-            # [수정] 오답 메시지 포맷과 우선순위 적용
+            # [수정] 스레드 풀 적용
             if result_status == "not_found":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "사전없음")
                 self.log_message(f"{fail_msg} [단어장에 없음]")
-                threading.Thread(target=log_unknown_word, args=(word,)).start()
+                self.thread_pool.submit(log_unknown_word, word)
             elif result_status == "unavailable":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "부적절")
                 self.log_message(f"{fail_msg} [단어장에 없음]") 
-                threading.Thread(target=handle_violation_alert, args=(nickname, word)).start()
+                self.thread_pool.submit(handle_violation_alert, nickname, word)
+                self.thread_pool.submit(log_unknown_word, word)
             elif result_status == "forbidden":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "금지어")
                 self.log_message(f"{fail_msg} [금지됨]")

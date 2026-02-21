@@ -108,7 +108,8 @@ class DatabaseManager:
 
             try:
                 with self.conn.cursor() as cursor:
-                    sql_check = "SELECT num, is_use, can_use, available FROM ko_word WHERE TRIM(word) = %s"
+                    # [수정] 성능(Index) 향상을 위해 TRIM 제거
+                    sql_check = "SELECT num, is_use, can_use, available FROM ko_word WHERE word = %s"
                     cursor.execute(sql_check, (word,))
                     result = cursor.fetchone()
 
@@ -141,7 +142,6 @@ class DatabaseManager:
                 print(f"[오류] 단어 검증 에러: {e}")
                 return "error"
 
-    # [수정 2] 희귀 끝단어 확인 쿼리 메서드 추가
     def check_rare_end_word(self, end_char):
         with self.lock:
             self._ensure_connection()
@@ -172,13 +172,15 @@ class DatabaseManager:
                 return 0
 
     def mark_word_as_forbidden(self, word):
+        word = word.strip()
         with self.lock:
             self._ensure_connection()
             if not self.conn: return False
             try:
                 with self.conn.cursor() as cursor:
-                    sql = "UPDATE ko_word SET can_use = FALSE WHERE TRIM(word) = %s"
-                    affected = cursor.execute(sql, (word.strip(),))
+                    # [수정] 성능(Index) 향상을 위해 TRIM 제거
+                    sql = "UPDATE ko_word SET can_use = FALSE WHERE word = %s"
+                    affected = cursor.execute(sql, (word,))
                     if affected > 0:
                         print(f"[시스템] 단어 '{word}' DB 차단 처리 완료 (can_use=FALSE)")
                         return True
