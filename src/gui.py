@@ -9,7 +9,6 @@ import math
 import unicodedata
 import traceback 
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QFrame, QSizePolicy, QMessageBox, QGridLayout,
@@ -82,7 +81,6 @@ class StartupCheckDialog(QDialog):
         
         self.use_chzzk = False
         self.use_youtube = False
-        self.temp_pool = ThreadPoolExecutor(max_workers=1)
         
         self.check_finished_signal.connect(self._on_check_finished)
 
@@ -132,7 +130,7 @@ class StartupCheckDialog(QDialog):
         self.lbl_env.setText("환경변수(날짜) 확인 중...")
         for lbl in [self.lbl_chzzk, self.lbl_yt, self.lbl_db, self.lbl_env]:
             lbl.setStyleSheet("color: black;")
-        self.temp_pool.submit(self._check_logic_thread)
+        threading.Thread(target=self._check_logic_thread, daemon=True).start()
 
     def _check_logic_thread(self):
         chzzk_ok, chzzk_msg = self.chzzk.check_live_status_sync()
@@ -310,9 +308,6 @@ class GameOverWidget(QWidget):
 class ChzzkGameGUI(QWidget):
     def __init__(self):
         super().__init__()
-        # [수정] 스레드 50개 허용
-        self.thread_pool = ThreadPoolExecutor(max_workers=50)
-        
         self.signals = GameSignals()
         self.chzzk_monitor = ChzzkMonitor(self.signals)
         self.youtube_monitor = YouTubeMonitor(self.signals)
@@ -336,7 +331,6 @@ class ChzzkGameGUI(QWidget):
 
         self.db_reset_date = os.getenv("db_reset_time", "알 수 없음")
         
-        # 정답 시 1초 쿨타임 및 무한 대기 방지용
         self.input_locked = False
         self.unlock_fallback_timer = QTimer(self)
         self.unlock_fallback_timer.setSingleShot(True)
@@ -374,7 +368,6 @@ class ChzzkGameGUI(QWidget):
     def run_startup_sequence(self):
         check_dlg = StartupCheckDialog(self.chzzk_monitor, self.youtube_monitor, self.db_manager)
         if check_dlg.exec() != QDialog.DialogCode.Accepted:
-            self.thread_pool.shutdown(wait=False)
             sys.exit() 
         
         self.use_chzzk = check_dlg.use_chzzk
@@ -404,7 +397,6 @@ class ChzzkGameGUI(QWidget):
             self.start_monitor_service()
             self.start_game_logic(start_word, start_user=start_user, restore_time=False)
         else:
-            self.thread_pool.shutdown(wait=False)
             sys.exit()
 
     def closeEvent(self, event: QCloseEvent):
@@ -422,8 +414,6 @@ class ChzzkGameGUI(QWidget):
         self.db_manager.export_all_data_to_csv()
         time.sleep(0.5) 
         
-        # 시스템 자원 해제
-        self.thread_pool.shutdown(wait=False)
         shutdown_dlg.set_status("데이터베이스 연결 해제 중...")
         self.db_manager.close()
         
@@ -474,7 +464,8 @@ class ChzzkGameGUI(QWidget):
         
         self.log_display = QTextEdit()
         self.log_display.setReadOnly(True)
-        self.log_display.document().setMaximumBlockCount(500) # 가비지 컬렉터 최적화
+        # [핵심] GUI 렌더링 랙 방지를 위한 줄 수 500줄 제한
+        self.log_display.document().setMaximumBlockCount(500) 
         self.log_display.setStyleSheet("""
             border: 2px solid white; 
             color: #AAAAAA; 
@@ -660,7 +651,7 @@ class ChzzkGameGUI(QWidget):
         self.update_hint(start_word[-1])
         self.log_message(f"[시스템] 게임 시작! 시작 단어: {start_word}")
 
-        self.thread_pool.submit(self._send_start_email_bg, start_word, start_user)
+        threading.Thread(target=self._send_start_email_bg, args=(start_word, start_user), daemon=True).start()
 
     def setup_connections(self):
         self.signals.word_detected.connect(self.handle_new_word)
@@ -712,7 +703,7 @@ class ChzzkGameGUI(QWidget):
         if now.minute == 0 and self.last_sent_hour != now.hour:
             self.last_sent_hour = now.hour
             self.async_log_system(6, "Game", f"정각({now.hour}시) 알림 메일 발송")
-            self.thread_pool.submit(self.thread_send_mail)
+            threading.Thread(target=self.thread_send_mail, daemon=True).start()
 
     def thread_send_mail(self):
         success, msg = send_alert_email(self.current_word_text, self.last_user)
@@ -734,7 +725,6 @@ class ChzzkGameGUI(QWidget):
             self.log_message("[시스템 주의] 단어 검증 지연 발생. 입력 잠금 강제 해제됨.")
 
     def async_log_system(self, level, source, message, trace=None):
-        # 큐 삽입 방식으로 변경되어 스레드 풀 할당 불필요
         self.db_manager.log_system(level, source, message, trace)
 
     def async_log_history(self, nickname, input_word, previous_word, status, reason=None):
@@ -765,7 +755,7 @@ class ChzzkGameGUI(QWidget):
             self.current_fail_count += 1
             self.log_message(f"[차단] {platform} - {nickname}: {word} (금지어: {bad_word})")
             self.async_log_history(nickname, word, self.current_word_text, "Fail", f"금지어({bad_word})")
-            self.thread_pool.submit(self.db_manager.mark_word_as_forbidden, word)
+            threading.Thread(target=self.db_manager.mark_word_as_forbidden, args=(word,), daemon=True).start()
             return
 
         if len(word) < 2: 
@@ -790,29 +780,32 @@ class ChzzkGameGUI(QWidget):
         self.input_locked = True
         self.unlock_fallback_timer.start(5000) 
         
-        # 정답 검증은 확장된 50개짜리 스레드 풀이 담당
-        self.thread_pool.submit(self._bg_check_word, platform, word, nickname)
+        # [핵심 변경] 가장 확실하고 오류 없는 즉각적인 독립 스레드로 검증 실행
+        threading.Thread(target=self._bg_check_word, args=(platform, word, nickname), daemon=True).start()
 
     def _bg_check_word(self, platform, word, nickname):
-        result = self.db_manager.check_and_use_word(word, nickname)
-        is_game_over = False
+        try:
+            result = self.db_manager.check_and_use_word(word, nickname)
+            is_game_over = False
 
-        if result == "success":
-            next_starts = apply_dueum_rule(word[-1])
-            any_left = False
-            for char in next_starts:
-                if self.db_manager.check_remaining_words(char):
-                    any_left = True
-                    break
-            if not any_left:
-                is_game_over = True
-        
-        self.signals.game_check_result.emit(result, platform, nickname, word, is_game_over)
+            if result == "success":
+                next_starts = apply_dueum_rule(word[-1])
+                any_left = False
+                for char in next_starts:
+                    if self.db_manager.check_remaining_words(char):
+                        any_left = True
+                        break
+                if not any_left:
+                    is_game_over = True
+            
+            self.signals.game_check_result.emit(result, platform, nickname, word, is_game_over)
+        except Exception as e:
+            print(f"[검증 스레드 오류] {e}")
+            self.signals.game_check_result.emit("error", platform, nickname, word, False)
 
     def on_word_check_finished(self, result_status, platform, nickname, word, is_game_over):
         if result_status == "success":
-            # [명심 사항 반영] 정답 시 1초 쿨타임 후 input_locked 해제
-            QTimer.singleShot(1000, self.unlock_input)
+            QTimer.singleShot(1000, self.unlock_input) # 정답 시 1초 쿨타임
             
             self.last_platform = platform
             self.last_user = nickname
@@ -823,7 +816,7 @@ class ChzzkGameGUI(QWidget):
             self.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: [{platform}] {nickname}")
             self.log_message(f"[성공] {platform} - {nickname}: {word}")
 
-            self.thread_pool.submit(self._check_and_send_rare_word, word, nickname)
+            threading.Thread(target=self._check_and_send_rare_word, args=(word, nickname), daemon=True).start()
 
             self.current_word_text = word
             self.set_responsive_text(word)
@@ -847,12 +840,12 @@ class ChzzkGameGUI(QWidget):
             if result_status == "not_found":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "사전없음")
                 self.log_message(f"{fail_msg} [단어장에 없음]")
-                self.thread_pool.submit(log_unknown_word, word)
+                threading.Thread(target=log_unknown_word, args=(word,), daemon=True).start()
             elif result_status == "unavailable":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "부적절")
                 self.log_message(f"{fail_msg} [단어장에 없음]") 
-                self.thread_pool.submit(handle_violation_alert, nickname, word)
-                self.thread_pool.submit(log_unknown_word, word)
+                threading.Thread(target=handle_violation_alert, args=(nickname, word), daemon=True).start()
+                threading.Thread(target=log_unknown_word, args=(word,), daemon=True).start()
             elif result_status == "forbidden":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "금지어")
                 self.log_message(f"{fail_msg} [금지됨]")
@@ -864,7 +857,7 @@ class ChzzkGameGUI(QWidget):
 
     def process_game_over(self, last_word, last_winner):
         self.db_manager.end_game_session(self.current_fail_count, last_word, self.last_platform, self.last_user)
-        self.thread_pool.submit(self.db_manager.export_all_data_to_csv)
+        threading.Thread(target=self.db_manager.export_all_data_to_csv, daemon=True).start()
         
         today_str = datetime.now().strftime("%Y.%m.%d %H:%M:%S")
         update_env_variable("db_reset_time", today_str)
