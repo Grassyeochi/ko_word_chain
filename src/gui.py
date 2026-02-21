@@ -4,11 +4,11 @@ import os
 import time
 import re
 import asyncio
+import threading
 import math
 import unicodedata
 import traceback 
 from datetime import datetime, timedelta
-# [수정] 스레드 최적화를 위해 ThreadPoolExecutor 임포트
 from concurrent.futures import ThreadPoolExecutor
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
@@ -82,8 +82,6 @@ class StartupCheckDialog(QDialog):
         
         self.use_chzzk = False
         self.use_youtube = False
-        
-        # [수정] 스레드 풀 임시 사용
         self.temp_pool = ThreadPoolExecutor(max_workers=1)
         
         self.check_finished_signal.connect(self._on_check_finished)
@@ -312,7 +310,6 @@ class GameOverWidget(QWidget):
 class ChzzkGameGUI(QWidget):
     def __init__(self):
         super().__init__()
-        # [수정] 스레드 남용을 막기 위한 스레드 풀(Thread Pool) 초기화
         self.thread_pool = ThreadPoolExecutor(max_workers=10)
         
         self.signals = GameSignals()
@@ -337,7 +334,12 @@ class ChzzkGameGUI(QWidget):
         self.last_user = None
 
         self.db_reset_date = os.getenv("db_reset_time", "알 수 없음")
+        
+        # [수정] 강제 잠금 해제 안전망 타이머 추가 (GUI 스레드 전용)
         self.input_locked = False
+        self.unlock_fallback_timer = QTimer(self)
+        self.unlock_fallback_timer.setSingleShot(True)
+        self.unlock_fallback_timer.timeout.connect(self.force_unlock_input)
         
         self.email_sent_flag = False 
         self.last_sent_hour = -1 
@@ -416,10 +418,10 @@ class ChzzkGameGUI(QWidget):
         )
 
         shutdown_dlg.set_status("로그 및 데이터 백업 중...")
+        # 종료 시에는 안전을 위해 동기적으로 백업 완료까지 대기합니다.
         self.db_manager.export_all_data_to_csv()
         time.sleep(0.5) 
         
-        # [수정] 스레드 풀 안전 종료
         self.thread_pool.shutdown(wait=False)
         
         shutdown_dlg.set_status("데이터베이스 연결 해제 중...")
@@ -667,7 +669,6 @@ class ChzzkGameGUI(QWidget):
         self.update_hint(start_word[-1])
         self.log_message(f"[시스템] 게임 시작! 시작 단어: {start_word}")
 
-        # [수정] 스레드 풀 사용
         self.thread_pool.submit(self._send_start_email_bg, start_word, start_user)
 
     def setup_connections(self):
@@ -692,13 +693,10 @@ class ChzzkGameGUI(QWidget):
                 self.is_global_offline = True
                 self.async_log_system(10, "Game", "모든 방송 연결 끊김. 대기 모드 진입.")
                 self.lbl_current_word.setText("방송 연결 대기 중...")
-                
-                # [수정] 폰트 크기 충돌 버그 방지를 위해 setFont 사용
                 self.lbl_current_word.setStyleSheet("color: orange;")
                 font = self.lbl_current_word.font()
                 font.setPointSize(50)
                 self.lbl_current_word.setFont(font)
-                
                 self.log_message("[시스템] 모든 방송 연결이 끊겼습니다. 재접속 대기 중...")
         else:
             self.log_message(f"[시스템] {platform_name} 연결 불안정. 재접속 시도 중...")
@@ -733,7 +731,6 @@ class ChzzkGameGUI(QWidget):
         if now.minute == 0 and self.last_sent_hour != now.hour:
             self.last_sent_hour = now.hour
             self.async_log_system(6, "Game", f"정각({now.hour}시) 알림 메일 발송")
-            # [수정] 스레드 풀 사용
             self.thread_pool.submit(self.thread_send_mail)
 
     def thread_send_mail(self):
@@ -746,15 +743,22 @@ class ChzzkGameGUI(QWidget):
         hint_str = ", ".join([f"!{c}..." for c in valid_starts])
         self.lbl_next_hint.setText(f"다음 글자: '{last_char}' (가능: {hint_str})")
         
+    # [수정] 잠금을 해제하며, 안전망 타이머가 활성화되어 있으면 정지
     def unlock_input(self):
         self.input_locked = False
+        if self.unlock_fallback_timer.isActive():
+            self.unlock_fallback_timer.stop()
+
+    # [신규] 5초 이상 응답이 없을 때 호출되는 안전망
+    def force_unlock_input(self):
+        if self.input_locked:
+            self.input_locked = False
+            self.log_message("[시스템 주의] 단어 검증 지연 발생. 입력 잠금 강제 해제됨.")
 
     def async_log_system(self, level, source, message, trace=None):
-        # [수정] 스레드 풀 사용
         self.thread_pool.submit(self.db_manager.log_system, level, source, message, trace)
 
     def async_log_history(self, nickname, input_word, previous_word, status, reason=None):
-        # [수정] 스레드 풀 사용
         self.thread_pool.submit(self.db_manager.log_history, nickname, input_word, previous_word, status, reason)
     
     def play_success_sound(self):
@@ -787,11 +791,9 @@ class ChzzkGameGUI(QWidget):
             self.current_fail_count += 1
             self.log_message(f"[차단] {platform} - {nickname}: {word} (금지어: {bad_word})")
             self.async_log_history(nickname, word, self.current_word_text, "Fail", f"금지어({bad_word})")
-            # [수정] 스레드 풀 사용
             self.thread_pool.submit(self.db_manager.mark_word_as_forbidden, word)
             return
 
-        # [수정] 1글자 단어 허점 완벽 차단 로직 적용 (< 1 에서 < 2로 변경)
         if len(word) < 2: 
             self.current_fail_count += 1
             self.async_log_history(nickname, word, self.current_word_text, "Fail", "한 글자")
@@ -813,9 +815,10 @@ class ChzzkGameGUI(QWidget):
                 self.log_message(f"[실패] {platform} - {nickname}: {word} [초성 불일치]")
                 return
 
+        # 입력 잠금 및 프리징 방지 타이머 시작
         self.input_locked = True
+        self.unlock_fallback_timer.start(5000) 
         
-        # [수정] 스레드 풀 사용
         self.thread_pool.submit(self._bg_check_word, platform, word, nickname)
 
     def _bg_check_word(self, platform, word, nickname):
@@ -836,6 +839,7 @@ class ChzzkGameGUI(QWidget):
 
     def on_word_check_finished(self, result_status, platform, nickname, word, is_game_over):
         if result_status == "success":
+            # 정답 시 성공 연출 후 잠금 해제
             QTimer.singleShot(1000, self.unlock_input)
             
             self.last_platform = platform
@@ -848,7 +852,6 @@ class ChzzkGameGUI(QWidget):
             self.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: {display_str}")
             self.log_message(f"[성공] {platform} - {nickname}: {word}")
 
-            # [수정] 스레드 풀 사용
             self.thread_pool.submit(self._check_and_send_rare_word, word, nickname)
 
             self.current_word_text = word
@@ -869,11 +872,12 @@ class ChzzkGameGUI(QWidget):
                 self.process_game_over(word, nickname)
 
         else:
-            self.input_locked = False
+            # 오답 시 즉시 잠금 해제
+            self.unlock_input()
+            
             self.current_fail_count += 1
             fail_msg = f"[실패] {platform} - {nickname}: {word}"
             
-            # [수정] 스레드 풀 적용
             if result_status == "not_found":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "사전없음")
                 self.log_message(f"{fail_msg} [단어장에 없음]")
@@ -891,7 +895,6 @@ class ChzzkGameGUI(QWidget):
                 self.log_message(f"{fail_msg} [이미 사용됨]")
             else:
                 self.log_message(f"[시스템 오류] {fail_msg} (DB 에러 발생)")
-                self.input_locked = False
 
     def process_game_over(self, last_word, last_winner):
         self.db_manager.end_game_session(
@@ -901,7 +904,9 @@ class ChzzkGameGUI(QWidget):
             self.last_user
         )
         
-        self.db_manager.export_all_data_to_csv()
+        # [수정] 게임 오버 연출에 방해되지 않도록 백업은 백그라운드 워커에게 위임
+        self.thread_pool.submit(self.db_manager.export_all_data_to_csv)
+        
         count = self.db_manager.get_used_word_count()
         today_str = datetime.now().strftime("%Y.%m.%d %H:%M:%S")
         update_env_variable("db_reset_time", today_str)

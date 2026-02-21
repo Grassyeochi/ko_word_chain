@@ -80,7 +80,6 @@ def log_unknown_word(word):
 def handle_violation_alert(nickname, word):
     record_file = "violation_users.txt"
     
-    # [수정] 파일 읽기 시 락 적용
     with file_lock:
         if os.path.exists(record_file):
             try:
@@ -112,11 +111,11 @@ def handle_violation_alert(nickname, word):
         msg['From'] = sender
         msg['To'] = receiver
 
-        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+        # [수정] 무한 대기 방지를 위해 timeout=10 적용
+        with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=10) as server:
             server.login(sender, password)
             server.send_message(msg)
         
-        # [수정] 파일 쓰기 시 락 적용
         with file_lock:
             try:
                 with open(record_file, "a", encoding="utf-8") as f:
@@ -150,7 +149,8 @@ def send_crash_report_email(error_log):
         msg['From'] = sender
         msg['To'] = receiver
 
-        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+        # [수정] timeout=10 적용
+        with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=10) as server:
             server.login(sender, password)
             server.send_message(msg)
         
@@ -236,7 +236,6 @@ def send_alert_email(current_word, current_winner):
     receiver = os.getenv("MAIL_RECEIVER")
 
     if not (sender and password and receiver):
-        print("[Utils] 메일 설정 누락으로 발송 취소")
         return False, "설정 누락"
 
     try:
@@ -250,7 +249,8 @@ def send_alert_email(current_word, current_winner):
         msg['From'] = sender
         msg['To'] = receiver
 
-        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+        # [수정] timeout=10 적용
+        with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=10) as server:
             server.login(sender, password)
             server.send_message(msg)
         
@@ -279,7 +279,8 @@ def send_rare_word_email(current_word, current_winner):
         msg['From'] = sender
         msg['To'] = receiver
 
-        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+        # [수정] timeout=10 적용
+        with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=10) as server:
             server.login(sender, password)
             server.send_message(msg)
         
@@ -308,7 +309,8 @@ def send_game_start_email(start_word, start_user):
         msg['From'] = sender
         msg['To'] = receiver
 
-        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+        # [수정] timeout=10 적용
+        with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=10) as server:
             server.login(sender, password)
             server.send_message(msg)
         

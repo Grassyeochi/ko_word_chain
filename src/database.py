@@ -108,7 +108,6 @@ class DatabaseManager:
 
             try:
                 with self.conn.cursor() as cursor:
-                    # [수정] 성능(Index) 향상을 위해 TRIM 제거
                     sql_check = "SELECT num, is_use, can_use, available FROM ko_word WHERE word = %s"
                     cursor.execute(sql_check, (word,))
                     result = cursor.fetchone()
@@ -178,7 +177,6 @@ class DatabaseManager:
             if not self.conn: return False
             try:
                 with self.conn.cursor() as cursor:
-                    # [수정] 성능(Index) 향상을 위해 TRIM 제거
                     sql = "UPDATE ko_word SET can_use = FALSE WHERE word = %s"
                     affected = cursor.execute(sql, (word,))
                     if affected > 0:
@@ -344,37 +342,43 @@ class DatabaseManager:
                 return False
 
     def export_all_data_to_csv(self):
-        with self.lock:
-            self._ensure_connection()
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_dir = "backups"
-            if not os.path.exists(backup_dir): os.makedirs(backup_dir)
-            
-            tables = ["app_logs", "game_history", "game_status"]
-            
-            try:
+        # [수정] DB Lock의 유지 시간을 최소화하기 위해 데이터 패치와 파일 I/O를 분리
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_dir = "backups"
+        if not os.path.exists(backup_dir): os.makedirs(backup_dir)
+        
+        tables = ["app_logs", "game_history", "game_status"]
+        tables_data = {}
+
+        try:
+            # 1. 빠른 속도로 데이터만 메모리로 가져옴 (여기서만 Lock 유지)
+            with self.lock:
+                self._ensure_connection()
                 if not self.conn: return False, None
                 with self.conn.cursor() as cursor:
                     for table in tables:
                         try:
-                            sql = f"SELECT * FROM {table}"
-                            cursor.execute(sql)
+                            cursor.execute(f"SELECT * FROM {table}")
                             rows = cursor.fetchall()
-                            if cursor.description: column_names = [i[0] for i in cursor.description]
-                            else: column_names = []
-                            filename = f"{backup_dir}/{table}_{timestamp}.csv"
-                            with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
-                                writer = csv.writer(f)
-                                if column_names: writer.writerow(column_names)
-                                writer.writerows(rows)
-                            print(f"[시스템] {table} 백업 완료: {filename}")
+                            cols = [i[0] for i in cursor.description] if cursor.description else []
+                            tables_data[table] = (cols, rows)
                         except Exception as sub_e:
-                            print(f"[경고] {table} 테이블 백업 중 오류: {sub_e}")
+                            print(f"[경고] {table} 테이블 백업 준비 중 오류: {sub_e}")
                             continue
-                return True, timestamp
-            except Exception as e:
-                print(f"[오류] CSV 내보내기 실패: {e}")
-                return False, None
+
+            # 2. Lock을 푼 상태에서 느린 파일 입출력(디스크 저장) 수행하여 프리징 방지
+            for table, (cols, rows) in tables_data.items():
+                filename = f"{backup_dir}/{table}_{timestamp}.csv"
+                with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
+                    writer = csv.writer(f)
+                    if cols: writer.writerow(cols)
+                    writer.writerows(rows)
+                print(f"[시스템] {table} 백업 완료: {filename}")
+
+            return True, timestamp
+        except Exception as e:
+            print(f"[오류] CSV 내보내기 실패: {e}")
+            return False, None
 
     def reset_all_tables(self):
         with self.lock:
