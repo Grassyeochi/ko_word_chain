@@ -252,14 +252,28 @@ class ConsoleWindow(QWidget):
         layout.addWidget(self.output_area)
         layout.addWidget(self.input_line)
         self.setLayout(layout)
+
     def log(self, text):
         self.output_area.append(text)
         self.output_area.verticalScrollBar().setValue(self.output_area.verticalScrollBar().maximum())
+
     def process_command(self):
         cmd_full = self.input_line.text().strip()
         self.input_line.clear()
         if not cmd_full: return
         self.log(f"> {cmd_full}")
+
+        parts = cmd_full.split()
+        if len(parts) == 2 and parts[0] == "ban":
+            target_char = parts[1]
+            if len(target_char) == 1:
+                result_msg = self.main_window.db_manager.toggle_banned_char(target_char)
+                self.log(result_msg)
+                self.main_window._update_banned_chars_gui()
+            else:
+                self.log("오류: ban 명령어는 무조건 한 글자만 입력해야 합니다. (예: ban 늄)")
+            return
+
         result_msg = self.main_window.command_manager.execute(cmd_full)
         if result_msg: self.log(result_msg)
 
@@ -301,8 +315,7 @@ class GameOverWidget(QWidget):
         
     def set_stats(self, word, nickname, count):
         self.lbl_last_word.setText(f"최종 단어 : {word}")
-        # [수정] 긴 닉네임 필터링 적용 (30글자 기준)
-        d_nick = nickname if (nickname and len(nickname) <= 30) else ("그 긴 거" if nickname else "-")
+        d_nick = nickname if (nickname and len(nickname) < 20) else ("그 긴 거" if nickname else "-")
         self.lbl_last_winner.setText(f"최종 단어를 사용한 시청자 : {d_nick}")
         self.lbl_word_count.setText(f"제시된 단어 수 : {count}")
         
@@ -466,10 +479,9 @@ class ChzzkGameGUI(QWidget):
         self.subtitle_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         left_layout.addWidget(self.subtitle_label)
 
-        self.lbl_banned_chars = QLabel("")
+        self.lbl_banned_chars = QLabel("금지된 끝 글자 : 없음")
         self.lbl_banned_chars.setFont(QFont("NanumBarunGothic", 14, QFont.Weight.Bold))
         self.lbl_banned_chars.setStyleSheet("color: #FF4444; margin-bottom: 10px;")
-        self.lbl_banned_chars.hide()
         left_layout.addWidget(self.lbl_banned_chars)
 
         left_layout.addStretch(1)
@@ -634,9 +646,8 @@ class ChzzkGameGUI(QWidget):
         banned = self.db_manager.get_banned_end_chars()
         if banned:
             self.lbl_banned_chars.setText(f"금지된 끝 글자 : {', '.join(banned)}")
-            self.lbl_banned_chars.show()
         else:
-            self.lbl_banned_chars.hide()
+            self.lbl_banned_chars.setText("금지된 끝 글자 : 없음")
 
     def start_game_logic(self, start_word, start_user=None, restore_time=False):
         if isinstance(start_word, (tuple, list)):
@@ -663,9 +674,8 @@ class ChzzkGameGUI(QWidget):
         curr_dt_str = datetime.fromtimestamp(self.last_change_time).strftime("%Y.%m.%d %H:%M:%S")
         update_env_variable("last_word_change_time", curr_dt_str)
 
-        # [수정] 긴 닉네임 필터링 적용 (30글자 기준)
         if start_user:
-            d_user = start_user if len(start_user) <= 30 else "그 긴 거"
+            d_user = start_user if len(start_user) < 20 else "그 긴 거"
             self.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: {d_user}")
         else:
             self.lbl_last_winner.setText("현재 단어를 맞춘 사람: -")
@@ -847,8 +857,7 @@ class ChzzkGameGUI(QWidget):
             self.play_success_sound()
             self.async_log_history(nickname, word, self.current_word_text, "Success")
             
-            # [수정] 긴 닉네임 필터링 적용 (30글자 기준)
-            d_nick = nickname if len(nickname) <= 30 else "그 긴 거"
+            d_nick = nickname if len(nickname) < 20 else "그 긴 거"
             self.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: [{platform}] {d_nick}")
             self.log_message(f"[성공] {platform} - {nickname}: {word}")
 
@@ -884,6 +893,10 @@ class ChzzkGameGUI(QWidget):
                 threading.Thread(target=log_unknown_word, args=(word,), daemon=True).start()
             elif result_status == "forbidden":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "금지어")
+                self.log_message(f"{fail_msg} [금지됨]")
+            elif result_status == "forbidden_end_char":
+                # [수정] 금지된 글자로 끝날 시 UI에는 [금지됨]으로 표시
+                self.async_log_history(nickname, word, self.current_word_text, "Fail", "끝글자금지")
                 self.log_message(f"{fail_msg} [금지됨]")
             elif result_status == "used":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "이미사용")

@@ -42,7 +42,6 @@ class DatabaseManager:
                 connect_timeout=10 
             )
             
-            # [신규] 24시간 금지된 끝 글자를 저장할 테이블 자동 생성
             with self.conn.cursor() as cursor:
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS banned_end_chars (
@@ -155,12 +154,11 @@ class DatabaseManager:
             if not self.conn: return "error:DB 연결이 끊어져 있습니다."
             try:
                 with self.conn.cursor() as cursor:
-                    # [신규] 24시간 룰: 단어의 끝 글자가 금지된 글자인지 확인
-                    sql_banned = "SELECT 1 FROM banned_end_chars WHERE char_val = %s AND banned_at > NOW() - INTERVAL 24 HOUR"
+                    # [수정 반영] 24시간 조건 체크 없이 존재 여부만 확인. 사전에 있든 없든 즉시 차단
+                    sql_banned = "SELECT 1 FROM banned_end_chars WHERE char_val = %s"
                     cursor.execute(sql_banned, (word[-1],))
                     if cursor.fetchone():
-                        # 금지된 단어는 is_use가 true인 것과 동일하게 처리 (이미 사용됨 반환)
-                        return "used"
+                        return "forbidden_end_char" 
 
                     sql_check = "SELECT num, is_use, can_use, available FROM ko_word WHERE word = %s"
                     cursor.execute(sql_check, (word,))
@@ -186,8 +184,7 @@ class DatabaseManager:
             if not self.conn: return 0
             try:
                 with self.conn.cursor() as cursor:
-                    # [신규] 금지된 끝 글자를 end_char로 가지는 단어는 아예 남은 단어 계산에서 제외 (게임오버 유도)
-                    cursor.execute("SELECT char_val FROM banned_end_chars WHERE banned_at > NOW() - INTERVAL 24 HOUR")
+                    cursor.execute("SELECT char_val FROM banned_end_chars")
                     banned_chars = [row[0] for row in cursor.fetchall()]
                     
                     if banned_chars:
@@ -217,7 +214,7 @@ class DatabaseManager:
                 print(f"[오류] 남은 단어 확인 에러: {e}")
                 return 0
 
-    # [신규] 게임 종료 시 마지막 단어의 시작 글자를 검사하여 5개 이하면 밴 처리
+    # [로직 전면 수정] 게임 종료 시 마지막 단어 첫 글자 기준 금지 판별
     def check_and_ban_start_char(self, last_word):
         if not last_word: return
         start_char = last_word[0]
@@ -225,31 +222,66 @@ class DatabaseManager:
             self._ensure_connection()
             if not self.conn: return
             try:
+                from .utils import apply_dueum_rule # 한방 단어 판독을 위한 두음법칙 호출
                 with self.conn.cursor() as cursor:
-                    sql = "SELECT COUNT(*) FROM ko_word WHERE word LIKE %s AND can_use = TRUE AND available = TRUE"
-                    cursor.execute(sql, (start_char + "%",))
-                    count = cursor.fetchone()[0]
-                    
-                    if count <= 5:
+                    # [수정 반영] 게임이 종료되는 이 시점에만 24시간이 넘은 밴 목록을 청소합니다.
+                    cursor.execute("DELETE FROM banned_end_chars WHERE banned_at <= NOW() - INTERVAL 24 HOUR")
+
+                    # 한방 단어가 아닌 것을 판별하기 위해, DB에 실제로 존재하는 모든 유효한 '시작 글자' 목록을 확보
+                    cursor.execute("SELECT DISTINCT LEFT(word, 1) FROM ko_word WHERE available = TRUE AND can_use = TRUE")
+                    valid_starts_in_db = {row[0] for row in cursor.fetchall()}
+
+                    # 마지막 단어의 '첫 글자'로 '시작'하고, '유효한(available=1, can_use=1)' 단어들의 끝 글자만 모두 가져옴
+                    cursor.execute("SELECT end_char FROM ko_word WHERE word LIKE %s AND available = TRUE AND can_use = TRUE", (start_char + "%",))
+                    end_chars = [row[0] for row in cursor.fetchall()]
+
+                    # 가져온 끝 글자들에 두음법칙을 적용해 보며, 다음 단어로 이어갈 수 있는 '한방 단어가 아닌 단어'만 카운트
+                    non_one_hit_count = 0
+                    for ec in end_chars:
+                        possible_next_chars = apply_dueum_rule(ec)
+                        if any(nc in valid_starts_in_db for nc in possible_next_chars):
+                            non_one_hit_count += 1
+
+                    # '한방 단어가 아닌' 유효 단어가 5개 이하라면 규칙 발동
+                    if non_one_hit_count <= 5:
                         sql_insert = """
                             INSERT INTO banned_end_chars (char_val, banned_at) 
                             VALUES (%s, NOW()) 
                             ON DUPLICATE KEY UPDATE banned_at = NOW()
                         """
                         cursor.execute(sql_insert, (start_char,))
-                        print(f"[시스템] 규칙 발동: '{start_char}'로 끝나는 단어 24시간 금지됨.")
+                        print(f"[시스템] 규칙 발동: '{start_char}'(으)로 끝나는 단어 24시간 금지 등록됨 (생존 가능 단어: {non_one_hit_count}개).")
             except Exception as e:
-                print(f"[오류] 금지 글자 등록 실패: {e}")
+                print(f"[오류] 금지 글자 등록/해제 실패: {e}")
 
-    # [신규] GUI 출력을 위해 24시간 이내의 금지된 끝 글자 목록 반환
+    def toggle_banned_char(self, char):
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return "DB 연결 상태를 확인해주세요."
+            try:
+                with self.conn.cursor() as cursor:
+                    cursor.execute("SELECT 1 FROM banned_end_chars WHERE char_val = %s", (char,))
+                    if cursor.fetchone():
+                        cursor.execute("DELETE FROM banned_end_chars WHERE char_val = %s", (char,))
+                        return f"[성공] '{char}' 글자가 금지 목록에서 해제되었습니다."
+                    else:
+                        sql_insert = """
+                            INSERT INTO banned_end_chars (char_val, banned_at) 
+                            VALUES (%s, NOW()) 
+                            ON DUPLICATE KEY UPDATE banned_at = NOW()
+                        """
+                        cursor.execute(sql_insert, (char,))
+                        return f"[성공] '{char}' 글자가 24시간 금지 목록에 추가되었습니다."
+            except Exception as e:
+                return f"[오류] 금지 설정 실패: {e}"
+
     def get_banned_end_chars(self):
         with self.lock:
             self._ensure_connection()
             if not self.conn: return []
             try:
                 with self.conn.cursor() as cursor:
-                    # 만료된 글자는 삭제 후 유효한 것만 반환
-                    cursor.execute("DELETE FROM banned_end_chars WHERE banned_at <= NOW() - INTERVAL 24 HOUR")
+                    # 타이머 호출 시에는 시간 제한 검사나 삭제를 하지 않고 있는 그대로 반환
                     cursor.execute("SELECT char_val FROM banned_end_chars")
                     return [row[0] for row in cursor.fetchall()]
             except Exception: return []
@@ -365,7 +397,7 @@ class DatabaseManager:
         backup_dir = "backups"
         if not os.path.exists(backup_dir): os.makedirs(backup_dir)
         
-        tables = ["app_logs", "game_history", "game_status"]
+        tables = ["app_logs", "game_history", "game_status", "banned_end_chars"]
         tables_data = {}
 
         try:
