@@ -4,7 +4,7 @@ import os
 import csv
 import threading
 import queue
-from datetime import datetime
+from datetime import datetime, timedelta
 
 class DatabaseManager:
     def __init__(self):
@@ -17,6 +17,10 @@ class DatabaseManager:
         self.current_game_id = None
         self.conn = None
         self.lock = threading.Lock() 
+        
+        # [신규] 금지 글자를 DB가 아닌 프로그램 메모리에 저장하는 변수
+        # 형태: { '글자': datetime(등록시간) }
+        self.banned_chars = {}
         
         self.connect()
 
@@ -42,13 +46,7 @@ class DatabaseManager:
                 connect_timeout=10 
             )
             
-            with self.conn.cursor() as cursor:
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS banned_end_chars (
-                        char_val VARCHAR(10) PRIMARY KEY,
-                        banned_at DATETIME
-                    )
-                """)
+            # DB 테이블 생성 로직(banned_end_chars) 제거됨
                 
             print(f"[시스템] DB 연결 성공 (Database: {self.db_name})")
         except Exception as e:
@@ -150,15 +148,14 @@ class DatabaseManager:
     def check_and_use_word(self, word, nickname):
         word = word.strip()
         with self.lock:
+            # [수정] DB 조회 전에 메모리 변수에서 끝 글자 밴 여부 즉시 판별
+            if word[-1] in self.banned_chars:
+                return "forbidden_end_char" 
+
             self._ensure_connection()
             if not self.conn: return "error:DB 연결이 끊어져 있습니다."
             try:
                 with self.conn.cursor() as cursor:
-                    sql_banned = "SELECT 1 FROM banned_end_chars WHERE char_val = %s"
-                    cursor.execute(sql_banned, (word[-1],))
-                    if cursor.fetchone():
-                        return "forbidden_end_char" 
-
                     sql_check = "SELECT num, is_use, can_use, available FROM ko_word WHERE word = %s"
                     cursor.execute(sql_check, (word,))
                     result = cursor.fetchone()
@@ -183,11 +180,11 @@ class DatabaseManager:
             if not self.conn: return 0
             try:
                 with self.conn.cursor() as cursor:
-                    cursor.execute("SELECT char_val FROM banned_end_chars")
-                    banned_chars = [row[0] for row in cursor.fetchall()]
+                    # [수정] 메모리 변수에서 현재 밴 목록 추출
+                    current_banned = list(self.banned_chars.keys())
                     
-                    if banned_chars:
-                        placeholders = ','.join(['%s'] * len(banned_chars))
+                    if current_banned:
+                        placeholders = ','.join(['%s'] * len(current_banned))
                         sql = f"""
                             SELECT count(*) FROM ko_word 
                             WHERE word LIKE %s 
@@ -196,7 +193,7 @@ class DatabaseManager:
                             AND available = TRUE 
                             AND end_char NOT IN ({placeholders})
                         """
-                        params = [start_char + "%"] + banned_chars
+                        params = [start_char + "%"] + current_banned
                         cursor.execute(sql, tuple(params))
                     else:
                         sql = """
@@ -218,14 +215,20 @@ class DatabaseManager:
         target_char = last_word[-1] 
         
         with self.lock:
+            # 1. 게임 종료 시점에만 24시간이 지난 자동 밴 해제 (메모리 정리)
+            now = datetime.now()
+            expired_chars = []
+            for char, banned_at in self.banned_chars.items():
+                if (now - banned_at).total_seconds() >= 24 * 3600:
+                    expired_chars.append(char)
+            for char in expired_chars:
+                del self.banned_chars[char]
+
             self._ensure_connection()
             if not self.conn: return
             try:
                 from .utils import apply_dueum_rule
                 with self.conn.cursor() as cursor:
-                    # 24시간이 지난 자동 밴 해제 (2099년 영구 밴은 이 조건을 무시하고 살아남음)
-                    cursor.execute("DELETE FROM banned_end_chars WHERE banned_at <= NOW() - INTERVAL 24 HOUR")
-
                     cursor.execute("SELECT DISTINCT LEFT(word, 1) FROM ko_word WHERE available = TRUE AND can_use = TRUE")
                     valid_starts_in_db = {row[0] for row in cursor.fetchall()}
 
@@ -251,50 +254,32 @@ class DatabaseManager:
                             non_one_hit_count += 1
 
                     if non_one_hit_count <= 5:
-                        # [수정] 수동(영구) 밴인 2099년 데이터를 자동 밴(NOW)이 덮어쓰지 못하도록 GREATEST 사용
-                        sql_insert = """
-                            INSERT INTO banned_end_chars (char_val, banned_at) 
-                            VALUES (%s, NOW()) 
-                            ON DUPLICATE KEY UPDATE banned_at = GREATEST(banned_at, NOW())
-                        """
-                        cursor.execute(sql_insert, (target_char,))
+                        # [수정] 메모리 변수에 밴 등록. 단, 콘솔 영구밴(2099년 등 미래시간)을 덮어쓰지 않도록 처리
+                        if target_char in self.banned_chars:
+                            if self.banned_chars[target_char] < now:
+                                self.banned_chars[target_char] = now
+                        else:
+                            self.banned_chars[target_char] = now
+                        
                         print(f"[시스템] 규칙 발동: '{target_char}'(으)로 끝나는 단어 금지 목록에 추가됨 (생존 가능 단어: {non_one_hit_count}개).")
             except Exception as e:
-                print(f"[오류] 금지 글자 등록 실패: {e}")
+                print(f"[오류] 금지 글자 판별 실패: {e}")
 
-    # [수정] 콘솔 명령어 토글 기능 강화 (영구 밴 적용)
     def toggle_banned_char(self, char):
         with self.lock:
-            self._ensure_connection()
-            if not self.conn: return "DB 연결 상태를 확인해주세요."
-            try:
-                with self.conn.cursor() as cursor:
-                    # 해당 글자가 금지 목록에 있다면 즉시 삭제(해제)
-                    cursor.execute("SELECT 1 FROM banned_end_chars WHERE char_val = %s", (char,))
-                    if cursor.fetchone():
-                        cursor.execute("DELETE FROM banned_end_chars WHERE char_val = %s", (char,))
-                        return f"[성공] '{char}' 글자가 영구 금지 목록에서 해제되었습니다."
-                    else:
-                        # 없다면 2099년을 부여하여 자동 만료되지 않는 영구 금지 적용
-                        sql_insert = """
-                            INSERT INTO banned_end_chars (char_val, banned_at) 
-                            VALUES (%s, '2099-12-31 23:59:59') 
-                            ON DUPLICATE KEY UPDATE banned_at = '2099-12-31 23:59:59'
-                        """
-                        cursor.execute(sql_insert, (char,))
-                        return f"[성공] '{char}' 글자가 수동(영구) 금지 목록에 추가되었습니다."
-            except Exception as e:
-                return f"[오류] 금지 설정 실패: {e}"
+            # [수정] 콘솔 명령어 토글 기능 메모리 기반으로 변경
+            if char in self.banned_chars:
+                del self.banned_chars[char]
+                return f"[성공] '{char}' 글자가 금지 목록에서 해제되었습니다."
+            else:
+                # 콘솔에 의한 영구 금지 처리를 위해 2099년 부여
+                self.banned_chars[char] = datetime(2099, 12, 31)
+                return f"[성공] '{char}' 글자가 영구 금지 목록에 추가되었습니다."
 
     def get_banned_end_chars(self):
         with self.lock:
-            self._ensure_connection()
-            if not self.conn: return []
-            try:
-                with self.conn.cursor() as cursor:
-                    cursor.execute("SELECT char_val FROM banned_end_chars")
-                    return [row[0] for row in cursor.fetchall()]
-            except Exception: return []
+            # [수정] 단순 메모리 리스트 반환
+            return list(self.banned_chars.keys())
 
     def check_rare_end_word(self, end_char):
         with self.lock:
@@ -407,7 +392,8 @@ class DatabaseManager:
         backup_dir = "backups"
         if not os.path.exists(backup_dir): os.makedirs(backup_dir)
         
-        tables = ["app_logs", "game_history", "game_status", "banned_end_chars"]
+        # [수정] banned_end_chars는 DB에 없으므로 백업에서 제외
+        tables = ["app_logs", "game_history", "game_status"]
         tables_data = {}
 
         try:
