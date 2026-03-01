@@ -16,11 +16,10 @@ class DatabaseManager:
         
         self.current_game_id = None
         self.conn = None
-        self.lock = threading.Lock() # 검증 로직 전용 안전 락
+        self.lock = threading.Lock() 
         
         self.connect()
 
-        # [핵심] 로그 기록으로 인한 병목을 막는 전담 큐(Queue)
         self.log_queue = queue.Queue()
         self.log_worker = threading.Thread(target=self._log_worker_loop, daemon=True)
         self.log_worker.start()
@@ -42,6 +41,16 @@ class DatabaseManager:
                 cursorclass=pymysql.cursors.Cursor,
                 connect_timeout=10 
             )
+            
+            # [신규] 24시간 금지된 끝 글자를 저장할 테이블 자동 생성
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS banned_end_chars (
+                        char_val VARCHAR(10) PRIMARY KEY,
+                        banned_at DATETIME
+                    )
+                """)
+                
             print(f"[시스템] DB 연결 성공 (Database: {self.db_name})")
         except Exception as e:
             print(f"[오류] DB 연결 실패: {e}")
@@ -52,11 +61,10 @@ class DatabaseManager:
             self.connect()
             return
         try:
-            self.conn.ping(reconnect=False)
+            self.conn.ping(reconnect=True)
         except Exception:
             self.connect()
 
-    # --- 로그 전담 스레드 로직 ---
     def _create_worker_connection(self):
         try:
             return pymysql.connect(
@@ -94,7 +102,19 @@ class DatabaseManager:
     def log_history(self, nickname, input_word, previous_word, status, reason=None):
         self.log_queue.put({'type': 'history', 'data': (nickname, input_word, previous_word, status, reason)})
 
-    # --- 핵심 검증 로직 ---
+    def get_recent_logs(self, log_type, limit=10):
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return []
+            try:
+                table_name = "app_logs" if log_type == "all" else "game_history"
+                with self.conn.cursor() as cursor:
+                    sql = f"SELECT * FROM {table_name} ORDER BY 1 DESC LIMIT %s"
+                    cursor.execute(sql, (limit,))
+                    return cursor.fetchall()
+            except Exception as e:
+                raise e
+
     def start_new_game_session(self, start_word):
         with self.lock:
             self._ensure_connection()
@@ -132,9 +152,16 @@ class DatabaseManager:
         word = word.strip()
         with self.lock:
             self._ensure_connection()
-            if not self.conn: return "error"
+            if not self.conn: return "error:DB 연결이 끊어져 있습니다."
             try:
                 with self.conn.cursor() as cursor:
+                    # [신규] 24시간 룰: 단어의 끝 글자가 금지된 글자인지 확인
+                    sql_banned = "SELECT 1 FROM banned_end_chars WHERE char_val = %s AND banned_at > NOW() - INTERVAL 24 HOUR"
+                    cursor.execute(sql_banned, (word[-1],))
+                    if cursor.fetchone():
+                        # 금지된 단어는 is_use가 true인 것과 동일하게 처리 (이미 사용됨 반환)
+                        return "used"
+
                     sql_check = "SELECT num, is_use, can_use, available FROM ko_word WHERE word = %s"
                     cursor.execute(sql_check, (word,))
                     result = cursor.fetchone()
@@ -150,8 +177,82 @@ class DatabaseManager:
                     affected = cursor.execute(sql_update, (nickname, pk_num))
                     return "success" if affected > 0 else "used"
             except Exception as e:
-                print(f"[오류] 단어 검증 에러: {e}")
-                return "error"
+                err_str = str(e).replace('\n', ' ')
+                return f"error:{err_str}"
+
+    def check_remaining_words(self, start_char):
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return 0
+            try:
+                with self.conn.cursor() as cursor:
+                    # [신규] 금지된 끝 글자를 end_char로 가지는 단어는 아예 남은 단어 계산에서 제외 (게임오버 유도)
+                    cursor.execute("SELECT char_val FROM banned_end_chars WHERE banned_at > NOW() - INTERVAL 24 HOUR")
+                    banned_chars = [row[0] for row in cursor.fetchall()]
+                    
+                    if banned_chars:
+                        placeholders = ','.join(['%s'] * len(banned_chars))
+                        sql = f"""
+                            SELECT count(*) FROM ko_word 
+                            WHERE word LIKE %s 
+                            AND is_use = FALSE 
+                            AND can_use = TRUE 
+                            AND available = TRUE 
+                            AND end_char NOT IN ({placeholders})
+                        """
+                        params = [start_char + "%"] + banned_chars
+                        cursor.execute(sql, tuple(params))
+                    else:
+                        sql = """
+                            SELECT count(*) FROM ko_word 
+                            WHERE word LIKE %s 
+                            AND is_use = FALSE 
+                            AND can_use = TRUE 
+                            AND available = TRUE
+                        """
+                        cursor.execute(sql, (start_char + "%",))
+                    
+                    return cursor.fetchone()[0] 
+            except Exception as e:
+                print(f"[오류] 남은 단어 확인 에러: {e}")
+                return 0
+
+    # [신규] 게임 종료 시 마지막 단어의 시작 글자를 검사하여 5개 이하면 밴 처리
+    def check_and_ban_start_char(self, last_word):
+        if not last_word: return
+        start_char = last_word[0]
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return
+            try:
+                with self.conn.cursor() as cursor:
+                    sql = "SELECT COUNT(*) FROM ko_word WHERE word LIKE %s AND can_use = TRUE AND available = TRUE"
+                    cursor.execute(sql, (start_char + "%",))
+                    count = cursor.fetchone()[0]
+                    
+                    if count <= 5:
+                        sql_insert = """
+                            INSERT INTO banned_end_chars (char_val, banned_at) 
+                            VALUES (%s, NOW()) 
+                            ON DUPLICATE KEY UPDATE banned_at = NOW()
+                        """
+                        cursor.execute(sql_insert, (start_char,))
+                        print(f"[시스템] 규칙 발동: '{start_char}'로 끝나는 단어 24시간 금지됨.")
+            except Exception as e:
+                print(f"[오류] 금지 글자 등록 실패: {e}")
+
+    # [신규] GUI 출력을 위해 24시간 이내의 금지된 끝 글자 목록 반환
+    def get_banned_end_chars(self):
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return []
+            try:
+                with self.conn.cursor() as cursor:
+                    # 만료된 글자는 삭제 후 유효한 것만 반환
+                    cursor.execute("DELETE FROM banned_end_chars WHERE banned_at <= NOW() - INTERVAL 24 HOUR")
+                    cursor.execute("SELECT char_val FROM banned_end_chars")
+                    return [row[0] for row in cursor.fetchall()]
+            except Exception: return []
 
     def check_rare_end_word(self, end_char):
         with self.lock:
@@ -185,6 +286,27 @@ class DatabaseManager:
                     affected = cursor.execute(sql, (word,))
                     return affected > 0
             except Exception: return False
+
+    def admin_force_use_word(self, word, nickname="console-admin"):
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return False
+            try:
+                with self.conn.cursor() as cursor:
+                    sql_check = "SELECT num FROM ko_word WHERE word = %s"
+                    cursor.execute(sql_check, (word,))
+                    result = cursor.fetchone()
+
+                    if result:
+                        pk_num = result[0]
+                        sql_update = "UPDATE ko_word SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s WHERE num = %s"
+                        cursor.execute(sql_update, (nickname, pk_num))
+                        return True
+                    else:
+                        return False
+            except Exception as e:
+                self.conn.rollback()
+                return False
 
     def test_db_integrity(self):
         with self.lock:
@@ -220,6 +342,24 @@ class DatabaseManager:
                     return str(result[0]) if result else "시작"
             except Exception: return "시작"
 
+    def get_and_use_random_available_word(self, nickname="console-random"):
+        with self.lock:
+            self._ensure_connection()
+            if not self.conn: return None
+            try:
+                with self.conn.cursor() as cursor:
+                    sql_select = "SELECT num, word FROM ko_word WHERE is_use = FALSE AND can_use = TRUE AND available = TRUE ORDER BY RAND() LIMIT 1"
+                    cursor.execute(sql_select)
+                    result = cursor.fetchone()
+                    
+                    if not result: return None
+                    
+                    pk_num, word = result
+                    sql_update = "UPDATE ko_word SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s WHERE num = %s"
+                    cursor.execute(sql_update, (nickname, pk_num))
+                    return str(word)
+            except Exception: return None
+
     def export_all_data_to_csv(self):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_dir = "backups"
@@ -229,7 +369,6 @@ class DatabaseManager:
         tables_data = {}
 
         try:
-            # 1. DB Lock 구간 최소화: 읽기만 빠르게 수행
             with self.lock:
                 self._ensure_connection()
                 if not self.conn: return False, None
@@ -242,7 +381,6 @@ class DatabaseManager:
                             tables_data[table] = (cols, rows)
                         except Exception: continue
 
-            # 2. Lock 해제 상태에서 느린 파일 쓰기 수행 (프리징 방지)
             for table, (cols, rows) in tables_data.items():
                 filename = f"{backup_dir}/{table}_{timestamp}.csv"
                 with open(filename, 'w', newline='', encoding='utf-8-sig') as f:

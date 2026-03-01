@@ -298,16 +298,21 @@ class GameOverWidget(QWidget):
         layout.addWidget(self.lbl_word_count)
         layout.addWidget(self.lbl_countdown)
         self.setLayout(layout)
+        
     def set_stats(self, word, nickname, count):
         self.lbl_last_word.setText(f"최종 단어 : {word}")
-        self.lbl_last_winner.setText(f"최종 단어를 사용한 시청자 : {nickname}")
+        # [수정] 긴 닉네임 필터링 적용 (30글자 기준)
+        d_nick = nickname if (nickname and len(nickname) <= 30) else ("그 긴 거" if nickname else "-")
+        self.lbl_last_winner.setText(f"최종 단어를 사용한 시청자 : {d_nick}")
         self.lbl_word_count.setText(f"제시된 단어 수 : {count}")
+        
     def update_countdown(self, seconds):
         self.lbl_countdown.setText(f"{seconds}초 후에 다시 시작합니다....")
 
 class ChzzkGameGUI(QWidget):
     def __init__(self):
         super().__init__()
+        
         self.signals = GameSignals()
         self.chzzk_monitor = ChzzkMonitor(self.signals)
         self.youtube_monitor = YouTubeMonitor(self.signals)
@@ -460,11 +465,17 @@ class ChzzkGameGUI(QWidget):
         self.subtitle_label.setStyleSheet("color: #CCCCCC; margin-bottom: 10px;") 
         self.subtitle_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         left_layout.addWidget(self.subtitle_label)
+
+        self.lbl_banned_chars = QLabel("")
+        self.lbl_banned_chars.setFont(QFont("NanumBarunGothic", 14, QFont.Weight.Bold))
+        self.lbl_banned_chars.setStyleSheet("color: #FF4444; margin-bottom: 10px;")
+        self.lbl_banned_chars.hide()
+        left_layout.addWidget(self.lbl_banned_chars)
+
         left_layout.addStretch(1)
         
         self.log_display = QTextEdit()
         self.log_display.setReadOnly(True)
-        # [핵심] GUI 렌더링 랙 방지를 위한 줄 수 500줄 제한
         self.log_display.document().setMaximumBlockCount(500) 
         self.log_display.setStyleSheet("""
             border: 2px solid white; 
@@ -489,12 +500,14 @@ class ChzzkGameGUI(QWidget):
         info_grid.setSpacing(15)
         lbl_style_title = "background-color: #333; padding: 8px; font-weight: bold; font-size: 14px; color: #EEE;"
         lbl_style_val = "border: 1px solid white; padding: 8px; font-size: 14px; color: white;"
-        lb_rt = QLabel("프로그램 런 타임")
+        
+        lb_rt = QLabel("프로그램 시작 시간 / 게임 진행 시간")
         lb_rt.setStyleSheet(lbl_style_title)
         lb_rt.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_runtime = QLabel("-")
         self.lbl_runtime.setStyleSheet(lbl_style_val)
         self.lbl_runtime.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
         lb_reset = QLabel("사용된 단어 목록 초기화 된 시간")
         lb_reset.setStyleSheet(lbl_style_title)
         lb_reset.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -513,6 +526,7 @@ class ChzzkGameGUI(QWidget):
         self.lbl_word_count = QLabel("0")
         self.lbl_word_count.setStyleSheet(lbl_style_val)
         self.lbl_word_count.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
         info_grid.addWidget(lb_rt, 0, 0)
         info_grid.addWidget(lb_reset, 0, 1)
         info_grid.addWidget(self.lbl_runtime, 1, 0)
@@ -523,6 +537,7 @@ class ChzzkGameGUI(QWidget):
         info_grid.addWidget(self.lbl_word_count, 3, 1)
         right_layout.addLayout(info_grid)
         right_layout.addSpacing(30)
+        
         self.lbl_last_winner = QLabel("현재 단어를 맞춘 사람: -")
         self.lbl_last_winner.setFixedHeight(40)
         self.lbl_last_winner.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -615,6 +630,14 @@ class ChzzkGameGUI(QWidget):
         if success: self.async_log_system(1, "Mail", "게임 시작 알림 메일 발송 성공")
         else: self.async_log_system(8, "Mail", "게임 시작 알림 메일 발송 실패", msg)
 
+    def _update_banned_chars_gui(self):
+        banned = self.db_manager.get_banned_end_chars()
+        if banned:
+            self.lbl_banned_chars.setText(f"금지된 끝 글자 : {', '.join(banned)}")
+            self.lbl_banned_chars.show()
+        else:
+            self.lbl_banned_chars.hide()
+
     def start_game_logic(self, start_word, start_user=None, restore_time=False):
         if isinstance(start_word, (tuple, list)):
             start_word = str(start_word[0]) if start_word else "시작"
@@ -640,7 +663,12 @@ class ChzzkGameGUI(QWidget):
         curr_dt_str = datetime.fromtimestamp(self.last_change_time).strftime("%Y.%m.%d %H:%M:%S")
         update_env_variable("last_word_change_time", curr_dt_str)
 
-        self.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: {start_user}" if start_user else "현재 단어를 맞춘 사람: -")
+        # [수정] 긴 닉네임 필터링 적용 (30글자 기준)
+        if start_user:
+            d_user = start_user if len(start_user) <= 30 else "그 긴 거"
+            self.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: {d_user}")
+        else:
+            self.lbl_last_winner.setText("현재 단어를 맞춘 사람: -")
 
         self.log_display.clear()
         self.answer_check_enabled = True
@@ -650,7 +678,8 @@ class ChzzkGameGUI(QWidget):
         self.async_log_system(1, "Game", f"게임 시작 (시작 단어: {start_word})")
         self.update_hint(start_word[-1])
         self.log_message(f"[시스템] 게임 시작! 시작 단어: {start_word}")
-
+        
+        self._update_banned_chars_gui()
         threading.Thread(target=self._send_start_email_bg, args=(start_word, start_user), daemon=True).start()
 
     def setup_connections(self):
@@ -692,11 +721,13 @@ class ChzzkGameGUI(QWidget):
 
     def update_runtime(self):
         if self.start_time is None:
-            self.lbl_runtime.setText(f"{self.program_start_dt.strftime('%Y.%m.%d %H:%M:%S')} - 00:00:00")
+            self.lbl_runtime.setText(f"{self.program_start_dt.strftime('%Y.%m.%d %H:%M:%S')} / 0:00:00")
             return
             
         now_ts = time.time()
-        self.lbl_runtime.setText(f"{self.program_start_dt.strftime('%Y.%m.%d %H:%M:%S')} - {str(timedelta(seconds=int(now_ts - self.start_time)))}")
+        start_str = self.program_start_dt.strftime('%Y.%m.%d %H:%M:%S')
+        running_time_str = str(timedelta(seconds=int(now_ts - self.start_time)))
+        self.lbl_runtime.setText(f"{start_str} / {running_time_str}")
         self.lbl_word_elapsed.setText(str(timedelta(seconds=int(now_ts - self.last_change_time))))
         
         now = datetime.now()
@@ -704,6 +735,9 @@ class ChzzkGameGUI(QWidget):
             self.last_sent_hour = now.hour
             self.async_log_system(6, "Game", f"정각({now.hour}시) 알림 메일 발송")
             threading.Thread(target=self.thread_send_mail, daemon=True).start()
+
+        if int(now_ts) % 10 == 0:
+            self._update_banned_chars_gui()
 
     def thread_send_mail(self):
         success, msg = send_alert_email(self.current_word_text, self.last_user)
@@ -780,7 +814,6 @@ class ChzzkGameGUI(QWidget):
         self.input_locked = True
         self.unlock_fallback_timer.start(5000) 
         
-        # [핵심 변경] 가장 확실하고 오류 없는 즉각적인 독립 스레드로 검증 실행
         threading.Thread(target=self._bg_check_word, args=(platform, word, nickname), daemon=True).start()
 
     def _bg_check_word(self, platform, word, nickname):
@@ -792,7 +825,7 @@ class ChzzkGameGUI(QWidget):
                 next_starts = apply_dueum_rule(word[-1])
                 any_left = False
                 for char in next_starts:
-                    if self.db_manager.check_remaining_words(char):
+                    if self.db_manager.check_remaining_words(char) > 0:
                         any_left = True
                         break
                 if not any_left:
@@ -800,12 +833,13 @@ class ChzzkGameGUI(QWidget):
             
             self.signals.game_check_result.emit(result, platform, nickname, word, is_game_over)
         except Exception as e:
-            print(f"[검증 스레드 오류] {e}")
-            self.signals.game_check_result.emit("error", platform, nickname, word, False)
+            err_str = str(e).replace('\n', ' ')
+            print(f"[검증 스레드 외부 오류] {err_str}")
+            self.signals.game_check_result.emit(f"error:{err_str}", platform, nickname, word, False)
 
     def on_word_check_finished(self, result_status, platform, nickname, word, is_game_over):
         if result_status == "success":
-            QTimer.singleShot(1000, self.unlock_input) # 정답 시 1초 쿨타임
+            QTimer.singleShot(1000, self.unlock_input)
             
             self.last_platform = platform
             self.last_user = nickname
@@ -813,7 +847,9 @@ class ChzzkGameGUI(QWidget):
             self.play_success_sound()
             self.async_log_history(nickname, word, self.current_word_text, "Success")
             
-            self.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: [{platform}] {nickname}")
+            # [수정] 긴 닉네임 필터링 적용 (30글자 기준)
+            d_nick = nickname if len(nickname) <= 30 else "그 긴 거"
+            self.lbl_last_winner.setText(f"현재 단어를 맞춘 사람: [{platform}] {d_nick}")
             self.log_message(f"[성공] {platform} - {nickname}: {word}")
 
             threading.Thread(target=self._check_and_send_rare_word, args=(word, nickname), daemon=True).start()
@@ -852,10 +888,17 @@ class ChzzkGameGUI(QWidget):
             elif result_status == "used":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "이미사용")
                 self.log_message(f"{fail_msg} [이미 사용됨]")
+            elif str(result_status).startswith("error:"):
+                error_detail = result_status.split(":", 1)[1] if ":" in result_status else "상세 오류 없음"
+                self.async_log_history(nickname, word, self.current_word_text, "Fail", f"DB에러: {error_detail[:10]}")
+                self.log_message(f"[시스템 오류] {fail_msg} (DB 에러: {error_detail})")
             else:
-                self.log_message(f"[시스템 오류] {fail_msg} (DB 에러 발생)")
+                self.log_message(f"[시스템 오류] {fail_msg} (알 수 없는 에러 상태: {result_status})")
 
     def process_game_over(self, last_word, last_winner):
+        self.db_manager.check_and_ban_start_char(last_word)
+        self._update_banned_chars_gui()
+        
         self.db_manager.end_game_session(self.current_fail_count, last_word, self.last_platform, self.last_user)
         threading.Thread(target=self.db_manager.export_all_data_to_csv, daemon=True).start()
         
