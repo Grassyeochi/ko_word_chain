@@ -364,6 +364,9 @@ class ChzzkGameGUI(QWidget):
         self.restart_timer.timeout.connect(self.tick_restart_countdown)
         self.countdown_val = 10
 
+        # [신규] DB 초기화 전담 백그라운드 스레드를 담아둘 변수
+        self.reset_thread = None
+
         self.init_audio()
         self.init_ui()
         self.setup_connections()
@@ -895,7 +898,6 @@ class ChzzkGameGUI(QWidget):
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "금지어")
                 self.log_message(f"{fail_msg} [금지됨]")
             elif result_status == "forbidden_end_char":
-                # [수정] 금지된 글자로 끝날 시 UI에는 [금지됨]으로 표시
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "끝글자금지")
                 self.log_message(f"{fail_msg} [금지됨]")
             elif result_status == "used":
@@ -925,14 +927,24 @@ class ChzzkGameGUI(QWidget):
         self.game_over_widget.update_countdown(self.countdown_val)
         self.restart_timer.start(1000)
 
+    # [핵심 로직 변경] 9초 시점에 DB 초기화 백그라운드 스레드 미리 시작
     def tick_restart_countdown(self):
         self.countdown_val -= 1
         self.game_over_widget.update_countdown(self.countdown_val)
+
+        if self.countdown_val == 9:
+            self.reset_thread = threading.Thread(target=self.db_manager.reset_all_tables, daemon=True)
+            self.reset_thread.start()
+
         if self.countdown_val <= 0:
             self.restart_timer.stop()
             self.restart_game_auto()
 
+    # [핵심 로직 변경] 0초가 되었을 때 스레드가 안 끝났으면 안전하게 완료 대기
     def restart_game_auto(self):
-        self.db_manager.reset_all_tables()
+        if self.reset_thread and self.reset_thread.is_alive():
+            self.log_message("[시스템] 게임 재시작 최적화 진행 중... (약간의 대기)")
+            self.reset_thread.join()
+
         self.start_game_logic(self.db_manager.get_random_start_word(), restore_time=False)
         self.stacked_widget.setCurrentIndex(0)
