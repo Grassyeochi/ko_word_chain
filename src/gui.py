@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QDialog, QProgressBar, QApplication)
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal, QRect
 from PyQt6.QtGui import QFont, QCloseEvent, QFontMetrics
-from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+# [수정] 오디오 관련 라이브러리 임포트 제거됨
 
 from .signals import GameSignals
 from .database import DatabaseManager
@@ -364,10 +364,9 @@ class ChzzkGameGUI(QWidget):
         self.restart_timer.timeout.connect(self.tick_restart_countdown)
         self.countdown_val = 10
 
-        # [신규] DB 초기화 전담 백그라운드 스레드를 담아둘 변수
         self.reset_thread = None
 
-        self.init_audio()
+        # [수정] 오디오 초기화(init_audio) 호출 로직 제거됨
         self.init_ui()
         self.setup_connections()
         
@@ -443,15 +442,7 @@ class ChzzkGameGUI(QWidget):
         time.sleep(0.3)
         event.accept()
 
-    def init_audio(self):
-        self.player = QMediaPlayer()
-        self.audio_output = QAudioOutput()
-        self.player.setAudioOutput(self.audio_output)
-        sound_filename = "sound-effect(currect).mp3"
-        sound_path = resource_path(sound_filename)
-        if os.path.exists(sound_path):
-            self.player.setSource(QUrl.fromLocalFile(sound_path))
-            self.audio_output.setVolume(1.0)
+    # [수정] 오디오 초기화(init_audio) 함수 블록 완전히 제거됨
 
     def init_ui(self):
         self.setWindowTitle("치지직/유튜브 한국어 끝말잇기")
@@ -776,11 +767,8 @@ class ChzzkGameGUI(QWidget):
 
     def async_log_history(self, nickname, input_word, previous_word, status, reason=None):
         self.db_manager.log_history(nickname, input_word, previous_word, status, reason)
-    
-    def play_success_sound(self):
-        if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-            self.player.stop()
-        self.player.play()
+
+    # [수정] play_success_sound 함수 완전히 제거됨
 
     def _check_and_send_rare_word(self, word, nickname):
         count = self.db_manager.check_rare_end_word(word[-1])
@@ -857,7 +845,7 @@ class ChzzkGameGUI(QWidget):
             self.last_platform = platform
             self.last_user = nickname
             
-            self.play_success_sound()
+            # [수정] self.play_success_sound() 호출부 제거됨
             self.async_log_history(nickname, word, self.current_word_text, "Success")
             
             d_nick = nickname if len(nickname) < 20 else "그 긴 거"
@@ -927,7 +915,6 @@ class ChzzkGameGUI(QWidget):
         self.game_over_widget.update_countdown(self.countdown_val)
         self.restart_timer.start(1000)
 
-    # [핵심 로직 변경] 9초 시점에 DB 초기화 백그라운드 스레드 미리 시작
     def tick_restart_countdown(self):
         self.countdown_val -= 1
         self.game_over_widget.update_countdown(self.countdown_val)
@@ -940,7 +927,6 @@ class ChzzkGameGUI(QWidget):
             self.restart_timer.stop()
             self.restart_game_auto()
 
-    # [핵심 로직 변경] 0초가 되었을 때 스레드가 안 끝났으면 안전하게 완료 대기
     def restart_game_auto(self):
         if self.reset_thread and self.reset_thread.is_alive():
             self.log_message("[시스템] 게임 재시작 최적화 진행 중... (약간의 대기)")
