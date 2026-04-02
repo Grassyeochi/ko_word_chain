@@ -16,12 +16,11 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QDialog, QProgressBar, QApplication)
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal, QRect
 from PyQt6.QtGui import QFont, QCloseEvent, QFontMetrics
-# [수정] 오디오 관련 라이브러리 임포트 제거됨
 
 from .signals import GameSignals
 from .database import DatabaseManager
 from .network import ChzzkMonitor, YouTubeMonitor
-from .utils import apply_dueum_rule, send_alert_email, send_rare_word_email, send_game_start_email, ProfanityFilter, update_env_variable, log_unknown_word, handle_violation_alert, send_crash_report_email
+from .utils import apply_dueum_rule, send_alert_email, send_rare_word_email, send_game_start_email, ProfanityFilter, update_env_variable, handle_violation_alert, send_crash_report_email
 from .commands import CommandManager
 
 def resource_path(relative_path):
@@ -366,7 +365,6 @@ class ChzzkGameGUI(QWidget):
 
         self.reset_thread = None
 
-        # [수정] 오디오 초기화(init_audio) 호출 로직 제거됨
         self.init_ui()
         self.setup_connections()
         
@@ -374,6 +372,19 @@ class ChzzkGameGUI(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_runtime)
         self.timer.start(1000)
+
+    # [신규] 아예 미등록된 단어만 안전하게(중복 없이) 텍스트 파일에 기록하는 내부 메서드
+    def safe_log_unknown_word(self, word):
+        filepath = resource_path("unknown_words.txt")
+        try:
+            if os.path.exists(filepath):
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    if word in f.read().splitlines():
+                        return  # 이미 존재하면 기록하지 않음
+            with open(filepath, 'a', encoding='utf-8') as f:
+                f.write(word + "\n")
+        except Exception as e:
+            print(f"[오류] 미등록 단어 기록 실패: {e}")
 
     def start_monitor_service(self):
         loop = asyncio.get_event_loop()
@@ -441,8 +452,6 @@ class ChzzkGameGUI(QWidget):
         shutdown_dlg.set_status("프로그램을 종료합니다.")
         time.sleep(0.3)
         event.accept()
-
-    # [수정] 오디오 초기화(init_audio) 함수 블록 완전히 제거됨
 
     def init_ui(self):
         self.setWindowTitle("치지직/유튜브 한국어 끝말잇기")
@@ -768,8 +777,6 @@ class ChzzkGameGUI(QWidget):
     def async_log_history(self, nickname, input_word, previous_word, status, reason=None):
         self.db_manager.log_history(nickname, input_word, previous_word, status, reason)
 
-    # [수정] play_success_sound 함수 완전히 제거됨
-
     def _check_and_send_rare_word(self, word, nickname):
         count = self.db_manager.check_rare_end_word(word[-1])
         if count != -1 and count <= 10:
@@ -845,7 +852,6 @@ class ChzzkGameGUI(QWidget):
             self.last_platform = platform
             self.last_user = nickname
             
-            # [수정] self.play_success_sound() 호출부 제거됨
             self.async_log_history(nickname, word, self.current_word_text, "Success")
             
             d_nick = nickname if len(nickname) < 20 else "그 긴 거"
@@ -874,14 +880,15 @@ class ChzzkGameGUI(QWidget):
             fail_msg = f"[실패] {platform} - {nickname}: {word}"
             
             if result_status == "not_found":
+                # [수정 반영] 미등록 단어인 경우에만 .txt 파일 저장 로직 호출
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "사전없음")
                 self.log_message(f"{fail_msg} [단어장에 없음]")
-                threading.Thread(target=log_unknown_word, args=(word,), daemon=True).start()
+                threading.Thread(target=self.safe_log_unknown_word, args=(word,), daemon=True).start()
             elif result_status == "unavailable":
+                # [수정 반영] 부적절한 단어(available=False)인 경우에만 메일 전송
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "부적절")
-                self.log_message(f"{fail_msg} [단어장에 없음]") 
+                self.log_message(f"{fail_msg} [사용 불가 단어]") 
                 threading.Thread(target=handle_violation_alert, args=(nickname, word), daemon=True).start()
-                threading.Thread(target=log_unknown_word, args=(word,), daemon=True).start()
             elif result_status == "forbidden":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "금지어")
                 self.log_message(f"{fail_msg} [금지됨]")

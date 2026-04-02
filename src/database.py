@@ -18,8 +18,6 @@ class DatabaseManager:
         self.conn = None
         self.lock = threading.Lock() 
         
-        # [신규] 금지 글자를 DB가 아닌 프로그램 메모리에 저장하는 변수
-        # 형태: { '글자': datetime(등록시간) }
         self.banned_chars = {}
         
         self.connect()
@@ -45,8 +43,6 @@ class DatabaseManager:
                 cursorclass=pymysql.cursors.Cursor,
                 connect_timeout=10 
             )
-            
-            # DB 테이블 생성 로직(banned_end_chars) 제거됨
                 
             print(f"[시스템] DB 연결 성공 (Database: {self.db_name})")
         except Exception as e:
@@ -148,7 +144,6 @@ class DatabaseManager:
     def check_and_use_word(self, word, nickname):
         word = word.strip()
         with self.lock:
-            # [수정] DB 조회 전에 메모리 변수에서 끝 글자 밴 여부 즉시 판별
             if word[-1] in self.banned_chars:
                 return "forbidden_end_char" 
 
@@ -180,8 +175,9 @@ class DatabaseManager:
             if not self.conn: return 0
             try:
                 with self.conn.cursor() as cursor:
-                    # [수정] 메모리 변수에서 현재 밴 목록 추출
                     current_banned = list(self.banned_chars.keys())
+                    # [수정 반영] 게임 오버를 판정하는 신뢰할 수 있는 출처 지정
+                    source_condition = "AND source IN ('URI', 'Standard', 'naver_wiki', 'admin', 'subway', 'wikipedia')"
                     
                     if current_banned:
                         placeholders = ','.join(['%s'] * len(current_banned))
@@ -191,17 +187,19 @@ class DatabaseManager:
                             AND is_use = FALSE 
                             AND can_use = TRUE 
                             AND available = TRUE 
+                            {source_condition}
                             AND end_char NOT IN ({placeholders})
                         """
                         params = [start_char + "%"] + current_banned
                         cursor.execute(sql, tuple(params))
                     else:
-                        sql = """
+                        sql = f"""
                             SELECT count(*) FROM ko_word 
                             WHERE word LIKE %s 
                             AND is_use = FALSE 
                             AND can_use = TRUE 
                             AND available = TRUE
+                            {source_condition}
                         """
                         cursor.execute(sql, (start_char + "%",))
                     
@@ -215,7 +213,6 @@ class DatabaseManager:
         target_char = last_word[-1] 
         
         with self.lock:
-            # 1. 게임 종료 시점에만 24시간이 지난 자동 밴 해제 (메모리 정리)
             now = datetime.now()
             expired_chars = []
             for char, banned_at in self.banned_chars.items():
@@ -236,6 +233,7 @@ class DatabaseManager:
                     like_clauses = " OR ".join(["word LIKE %s"] * len(valid_starts))
                     like_params = [c + "%" for c in valid_starts]
                     
+                    # [수정 반영] 생존 단어를 꼽을 때에도 동일하게 출처 제한 적용
                     sql = f"""
                         SELECT word, end_char 
                         FROM ko_word 
@@ -243,6 +241,7 @@ class DatabaseManager:
                         AND available = TRUE 
                         AND can_use = TRUE
                         AND is_use = FALSE
+                        AND source IN ('URI', 'Standard', 'naver_wiki', 'admin', 'subway', 'wikipedia')
                     """
                     cursor.execute(sql, tuple(like_params))
                     candidate_words = cursor.fetchall()
@@ -254,31 +253,27 @@ class DatabaseManager:
                             non_one_hit_count += 1
 
                     if non_one_hit_count <= 5:
-                        # [수정] 메모리 변수에 밴 등록. 단, 콘솔 영구밴(2099년 등 미래시간)을 덮어쓰지 않도록 처리
                         if target_char in self.banned_chars:
                             if self.banned_chars[target_char] < now:
                                 self.banned_chars[target_char] = now
                         else:
                             self.banned_chars[target_char] = now
                         
-                        print(f"[시스템] 규칙 발동: '{target_char}'(으)로 끝나는 단어 금지 목록에 추가됨 (생존 가능 단어: {non_one_hit_count}개).")
+                        print(f"[시스템] 규칙 발동: '{target_char}'(으)로 끝나는 단어 금지 목록에 추가됨 (신뢰 출처 생존 가능 단어: {non_one_hit_count}개).")
             except Exception as e:
                 print(f"[오류] 금지 글자 판별 실패: {e}")
 
     def toggle_banned_char(self, char):
         with self.lock:
-            # [수정] 콘솔 명령어 토글 기능 메모리 기반으로 변경
             if char in self.banned_chars:
                 del self.banned_chars[char]
                 return f"[성공] '{char}' 글자가 금지 목록에서 해제되었습니다."
             else:
-                # 콘솔에 의한 영구 금지 처리를 위해 2099년 부여
                 self.banned_chars[char] = datetime(2099, 12, 31)
                 return f"[성공] '{char}' 글자가 영구 금지 목록에 추가되었습니다."
 
     def get_banned_end_chars(self):
         with self.lock:
-            # [수정] 단순 메모리 리스트 반환
             return list(self.banned_chars.keys())
 
     def check_rare_end_word(self, end_char):
@@ -392,7 +387,6 @@ class DatabaseManager:
         backup_dir = "backups"
         if not os.path.exists(backup_dir): os.makedirs(backup_dir)
         
-        # [수정] banned_end_chars는 DB에 없으므로 백업에서 제외
         tables = ["app_logs", "game_history", "game_status"]
         tables_data = {}
 
