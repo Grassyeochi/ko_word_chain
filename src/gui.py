@@ -21,7 +21,7 @@ from .signals import GameSignals
 from .database import DatabaseManager
 from .network import ChzzkMonitor, YouTubeMonitor
 from .utils import apply_dueum_rule, send_alert_email, send_rare_word_email, send_game_start_email, ProfanityFilter, update_env_variable, handle_violation_alert, send_crash_report_email
-from .commands import CommandManager
+# [수정 반영] 외부 CommandManager 모듈 의존성 제거
 
 def resource_path(relative_path):
     try:
@@ -256,6 +256,7 @@ class ConsoleWindow(QWidget):
         self.output_area.append(text)
         self.output_area.verticalScrollBar().setValue(self.output_area.verticalScrollBar().maximum())
 
+    # [수정 반영] 요구된 5개의 명령어만 남기고 직접 처리
     def process_command(self):
         cmd_full = self.input_line.text().strip()
         self.input_line.clear()
@@ -263,18 +264,55 @@ class ConsoleWindow(QWidget):
         self.log(f"> {cmd_full}")
 
         parts = cmd_full.split()
-        if len(parts) == 2 and parts[0] == "ban":
-            target_char = parts[1]
-            if len(target_char) == 1:
+        if not parts: return
+
+        command = parts[0]
+        args = parts[1:]
+
+        if command == "chcw":
+            if len(args) == 1:
+                new_word = args[0]
+                self.main_window.current_word_text = new_word
+                self.main_window.set_responsive_text(new_word)
+                self.main_window.update_hint(new_word[-1])
+                self.log(f"[성공] 현재 단어가 '{new_word}'(으)로 변경되었습니다.")
+            else:
+                self.log("[오류] 사용법: chcw {단어}")
+        
+        elif command == "restart":
+            self.log("[성공] 게임을 현재 단어로 즉시 종료하고 재시작합니다.")
+            # 즉시 게임을 종료 처리하여 카운트다운 후 재시작되게 함
+            self.main_window.process_game_over(self.main_window.current_word_text, "Console")
+            
+        elif command == "game":
+            if len(args) == 1 and args[0] == "stop":
+                if getattr(self.main_window, 'is_paused', False):
+                    self.log("[오류] 이미 게임이 일시정지 상태입니다.")
+                else:
+                    self.main_window.is_paused = True
+                    self.main_window.lbl_pause_status.show()
+                    self.log("[성공] 게임이 일시정지 되었습니다.")
+            elif len(args) == 1 and args[0] == "start":
+                if not getattr(self.main_window, 'is_paused', False):
+                    self.log("[오류] 게임이 일시정지 상태가 아닙니다.")
+                else:
+                    self.main_window.is_paused = False
+                    self.main_window.lbl_pause_status.hide()
+                    self.log("[성공] 게임이 재개되었습니다.")
+            else:
+                self.log("[오류] 사용법: game stop 또는 game start")
+
+        elif command == "ban":
+            if len(args) == 1 and len(args[0]) == 1:
+                target_char = args[0]
                 result_msg = self.main_window.db_manager.toggle_banned_char(target_char)
                 self.log(result_msg)
                 self.main_window._update_banned_chars_gui()
             else:
-                self.log("오류: ban 명령어는 무조건 한 글자만 입력해야 합니다. (예: ban 늄)")
-            return
-
-        result_msg = self.main_window.command_manager.execute(cmd_full)
-        if result_msg: self.log(result_msg)
+                self.log("[오류] 사용법: ban {한글자}")
+                
+        else:
+            self.log("[오류] 알 수 없는 명령어입니다. 사용 가능한 명령어: chcw, restart, game stop, game start, ban")
 
 class GameOverWidget(QWidget):
     def __init__(self):
@@ -329,7 +367,6 @@ class ChzzkGameGUI(QWidget):
         self.chzzk_monitor = ChzzkMonitor(self.signals)
         self.youtube_monitor = YouTubeMonitor(self.signals)
         self.db_manager = DatabaseManager()
-        self.command_manager = CommandManager(self)
         self.profanity_filter = ProfanityFilter()
         
         self.start_time = None 
@@ -348,6 +385,9 @@ class ChzzkGameGUI(QWidget):
 
         self.db_reset_date = os.getenv("db_reset_time", "알 수 없음")
         
+        # [신규] 일시정지 상태 플래그
+        self.is_paused = False
+
         self.input_locked = False
         self.unlock_fallback_timer = QTimer(self)
         self.unlock_fallback_timer.setSingleShot(True)
@@ -365,7 +405,6 @@ class ChzzkGameGUI(QWidget):
 
         self.reset_thread = None
         
-        # [신규] 연결 불안정 로그 쿨타임(임계치) 관리를 위한 변수
         self.last_offline_log_time = {} 
 
         self.init_ui()
@@ -603,7 +642,6 @@ class ChzzkGameGUI(QWidget):
             self.console_window = ConsoleWindow(self)
         self.console_window.show()
 
-    # [수정] GUI 로그 출력 시 시간 자동 포함
     def log_message(self, message):
         current_time_str = datetime.now().strftime("[%H:%M:%S]")
         formatted_message = f"{current_time_str} {message}"
@@ -690,7 +728,11 @@ class ChzzkGameGUI(QWidget):
 
         self.log_display.clear()
         self.answer_check_enabled = True
+        
+        # [수정] 게임 시작 시 일시정지 상태 완전 해제
+        self.is_paused = False
         self.lbl_pause_status.hide()
+        
         self.lbl_word_count.setText(str(self.db_manager.get_used_word_count()))
         
         self.async_log_system(1, "Game", f"게임 시작 (시작 단어: {start_word})")
@@ -723,7 +765,6 @@ class ChzzkGameGUI(QWidget):
                 self.lbl_current_word.setFont(font)
                 self.log_message("[시스템] 모든 방송 연결이 끊겼습니다. 재접속 대기 중...")
         else:
-            # [수정] 30초 임계치 적용하여 화면 로그 덜 출력되도록 조치
             now = time.time()
             last_log = self.last_offline_log_time.get(platform_name, 0)
             if now - last_log > 30:
@@ -795,6 +836,9 @@ class ChzzkGameGUI(QWidget):
             else: self.async_log_system(8, "Mail", "희귀단어 알림 발송 실패", msg)
 
     def handle_new_word(self, platform, nickname, word):
+        # [수정 반영] 일시정지 상태일 경우 입력 완전 무시 및 로깅 차단
+        if self.is_paused: return 
+        
         if self.input_locked: return
         if self.stacked_widget.currentIndex() == 1: return
         if not self.answer_check_enabled: return
