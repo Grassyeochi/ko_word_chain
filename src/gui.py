@@ -364,6 +364,9 @@ class ChzzkGameGUI(QWidget):
         self.countdown_val = 10
 
         self.reset_thread = None
+        
+        # [신규] 연결 불안정 로그 쿨타임(임계치) 관리를 위한 변수
+        self.last_offline_log_time = {} 
 
         self.init_ui()
         self.setup_connections()
@@ -373,14 +376,13 @@ class ChzzkGameGUI(QWidget):
         self.timer.timeout.connect(self.update_runtime)
         self.timer.start(1000)
 
-    # [신규] 아예 미등록된 단어만 안전하게(중복 없이) 텍스트 파일에 기록하는 내부 메서드
     def safe_log_unknown_word(self, word):
         filepath = resource_path("unknown_words.txt")
         try:
             if os.path.exists(filepath):
                 with open(filepath, 'r', encoding='utf-8') as f:
                     if word in f.read().splitlines():
-                        return  # 이미 존재하면 기록하지 않음
+                        return 
             with open(filepath, 'a', encoding='utf-8') as f:
                 f.write(word + "\n")
         except Exception as e:
@@ -601,8 +603,11 @@ class ChzzkGameGUI(QWidget):
             self.console_window = ConsoleWindow(self)
         self.console_window.show()
 
+    # [수정] GUI 로그 출력 시 시간 자동 포함
     def log_message(self, message):
-        self.log_display.append(message)
+        current_time_str = datetime.now().strftime("[%H:%M:%S]")
+        formatted_message = f"{current_time_str} {message}"
+        self.log_display.append(formatted_message)
         self.log_display.verticalScrollBar().setValue(self.log_display.verticalScrollBar().maximum())
 
     def set_responsive_text(self, text):
@@ -718,7 +723,12 @@ class ChzzkGameGUI(QWidget):
                 self.lbl_current_word.setFont(font)
                 self.log_message("[시스템] 모든 방송 연결이 끊겼습니다. 재접속 대기 중...")
         else:
-            self.log_message(f"[시스템] {platform_name} 연결 불안정. 재접속 시도 중...")
+            # [수정] 30초 임계치 적용하여 화면 로그 덜 출력되도록 조치
+            now = time.time()
+            last_log = self.last_offline_log_time.get(platform_name, 0)
+            if now - last_log > 30:
+                self.log_message(f"[시스템] {platform_name} 연결 불안정. 재접속 시도 중...")
+                self.last_offline_log_time[platform_name] = now
 
     def handle_stream_connected(self, platform_name):
         was_connected = self.platform_status.get(platform_name, False)
@@ -880,12 +890,10 @@ class ChzzkGameGUI(QWidget):
             fail_msg = f"[실패] {platform} - {nickname}: {word}"
             
             if result_status == "not_found":
-                # [수정 반영] 미등록 단어인 경우에만 .txt 파일 저장 로직 호출
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "사전없음")
                 self.log_message(f"{fail_msg} [단어장에 없음]")
                 threading.Thread(target=self.safe_log_unknown_word, args=(word,), daemon=True).start()
             elif result_status == "unavailable":
-                # [수정 반영] 부적절한 단어(available=False)인 경우에만 메일 전송
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "부적절")
                 self.log_message(f"{fail_msg} [사용 불가 단어]") 
                 threading.Thread(target=handle_violation_alert, args=(nickname, word), daemon=True).start()
