@@ -3,6 +3,7 @@ import sys
 import os
 import time
 import re
+import socket
 import asyncio
 import threading
 import math
@@ -21,7 +22,6 @@ from .signals import GameSignals
 from .database import DatabaseManager
 from .network import ChzzkMonitor, YouTubeMonitor
 from .utils import apply_dueum_rule, send_alert_email, send_rare_word_email, send_game_start_email, ProfanityFilter, update_env_variable, handle_violation_alert, send_crash_report_email
-# [수정 반영] 외부 CommandManager 모듈 의존성 제거
 
 def resource_path(relative_path):
     try:
@@ -256,7 +256,6 @@ class ConsoleWindow(QWidget):
         self.output_area.append(text)
         self.output_area.verticalScrollBar().setValue(self.output_area.verticalScrollBar().maximum())
 
-    # [수정 반영] 요구된 5개의 명령어만 남기고 직접 처리
     def process_command(self):
         cmd_full = self.input_line.text().strip()
         self.input_line.clear()
@@ -281,7 +280,6 @@ class ConsoleWindow(QWidget):
         
         elif command == "restart":
             self.log("[성공] 게임을 현재 단어로 즉시 종료하고 재시작합니다.")
-            # 즉시 게임을 종료 처리하여 카운트다운 후 재시작되게 함
             self.main_window.process_game_over(self.main_window.current_word_text, "Console")
             
         elif command == "game":
@@ -363,6 +361,14 @@ class ChzzkGameGUI(QWidget):
     def __init__(self):
         super().__init__()
         
+        # [신규 추가] 중복 실행 방지용 로컬 소켓 바인딩
+        self._instance_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            self._instance_socket.bind(("127.0.0.1", 58249))
+        except socket.error:
+            QMessageBox.critical(None, "실행 오류", "프로그램이 이미 실행 중입니다. 기존 창을 확인해주세요.")
+            sys.exit(0)
+
         self.signals = GameSignals()
         self.chzzk_monitor = ChzzkMonitor(self.signals)
         self.youtube_monitor = YouTubeMonitor(self.signals)
@@ -371,6 +377,7 @@ class ChzzkGameGUI(QWidget):
         
         self.start_time = None 
         self.program_start_dt = datetime.now() 
+        self.current_game_start_dt = datetime.now() # CSV 백업을 위한 게임 시작시간 변수
         self.last_change_time = time.time()
         self.current_word_text = ""
         
@@ -385,7 +392,6 @@ class ChzzkGameGUI(QWidget):
 
         self.db_reset_date = os.getenv("db_reset_time", "알 수 없음")
         
-        # [신규] 일시정지 상태 플래그
         self.is_paused = False
 
         self.input_locked = False
@@ -483,7 +489,10 @@ class ChzzkGameGUI(QWidget):
         )
 
         shutdown_dlg.set_status("로그 및 데이터 백업 중...")
-        self.db_manager.export_all_data_to_csv()
+        end_dt = datetime.now()
+        start_dt = getattr(self, 'current_game_start_dt', end_dt)
+        # [수정 반영] 프로그램 강제 종료 시 game_history 파일 백업 및 비우기
+        self.db_manager.export_and_clear_game_history(start_dt, end_dt)
         time.sleep(0.5) 
         
         shutdown_dlg.set_status("데이터베이스 연결 해제 중...")
@@ -702,6 +711,9 @@ class ChzzkGameGUI(QWidget):
         self.start_time = time.time()
         self.current_word_text = start_word
         
+        # [추가 반영] 현재 라운드 게임 시작 시간을 명확히 기록 (CSV 파일명 용도)
+        self.current_game_start_dt = datetime.now()
+        
         self.current_fail_count = 0
         self.db_manager.start_new_game_session(start_word)
         
@@ -729,7 +741,6 @@ class ChzzkGameGUI(QWidget):
         self.log_display.clear()
         self.answer_check_enabled = True
         
-        # [수정] 게임 시작 시 일시정지 상태 완전 해제
         self.is_paused = False
         self.lbl_pause_status.hide()
         
@@ -836,7 +847,6 @@ class ChzzkGameGUI(QWidget):
             else: self.async_log_system(8, "Mail", "희귀단어 알림 발송 실패", msg)
 
     def handle_new_word(self, platform, nickname, word):
-        # [수정 반영] 일시정지 상태일 경우 입력 완전 무시 및 로깅 차단
         if self.is_paused: return 
         
         if self.input_locked: return
@@ -962,7 +972,11 @@ class ChzzkGameGUI(QWidget):
         self._update_banned_chars_gui()
         
         self.db_manager.end_game_session(self.current_fail_count, last_word, self.last_platform, self.last_user)
-        threading.Thread(target=self.db_manager.export_all_data_to_csv, daemon=True).start()
+        
+        # [수정 반영] 게임 종료 시 game_history만 전용 백업 수행 후 비우기
+        end_dt = datetime.now()
+        start_dt = getattr(self, 'current_game_start_dt', end_dt)
+        threading.Thread(target=self.db_manager.export_and_clear_game_history, args=(start_dt, end_dt), daemon=True).start()
         
         today_str = datetime.now().strftime("%Y.%m.%d %H:%M:%S")
         update_env_variable("db_reset_time", today_str)

@@ -176,7 +176,6 @@ class DatabaseManager:
             try:
                 with self.conn.cursor() as cursor:
                     current_banned = list(self.banned_chars.keys())
-                    # [수정 반영] 게임 오버를 판정하는 신뢰할 수 있는 출처 지정
                     source_condition = "AND source IN ('URI', 'Standard', 'naver_wiki', 'admin', 'subway', 'wikipedia')"
                     
                     if current_banned:
@@ -233,7 +232,6 @@ class DatabaseManager:
                     like_clauses = " OR ".join(["word LIKE %s"] * len(valid_starts))
                     like_params = [c + "%" for c in valid_starts]
                     
-                    # [수정 반영] 생존 단어를 꼽을 때에도 동일하게 출처 제한 적용
                     sql = f"""
                         SELECT word, end_char 
                         FROM ko_word 
@@ -382,45 +380,47 @@ class DatabaseManager:
                     return str(word)
             except Exception: return None
 
-    def export_all_data_to_csv(self):
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_dir = "backups"
-        if not os.path.exists(backup_dir): os.makedirs(backup_dir)
-        
-        tables = ["app_logs", "game_history", "game_status"]
-        tables_data = {}
-
+    # [수정 반영] 오직 game_history만 시작/종료 시간에 맞춰 백업 후 비움
+    def export_and_clear_game_history(self, start_dt, end_dt):
         try:
+            logs_dir = "logs"
+            if not os.path.exists(logs_dir): 
+                os.makedirs(logs_dir)
+                
+            start_str = start_dt.strftime("%Y%m%d_%H%M%S") if start_dt else "Unknown"
+            end_str = end_dt.strftime("%Y%m%d_%H%M%S") if end_dt else "Unknown"
+            filename = os.path.join(logs_dir, f"game_history_{start_str}_to_{end_str}.csv")
+
             with self.lock:
                 self._ensure_connection()
                 if not self.conn: return False, None
+                
                 with self.conn.cursor() as cursor:
-                    for table in tables:
-                        try:
-                            cursor.execute(f"SELECT * FROM {table}")
-                            rows = cursor.fetchall()
-                            cols = [i[0] for i in cursor.description] if cursor.description else []
-                            tables_data[table] = (cols, rows)
-                        except Exception: continue
+                    cursor.execute("SELECT * FROM game_history")
+                    rows = cursor.fetchall()
+                    cols = [i[0] for i in cursor.description] if cursor.description else []
 
-            for table, (cols, rows) in tables_data.items():
-                filename = f"{backup_dir}/{table}_{timestamp}.csv"
-                with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
-                    writer = csv.writer(f)
-                    if cols: writer.writerow(cols)
-                    writer.writerows(rows)
-            return True, timestamp
-        except Exception: return False, None
+                    if rows:
+                        with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
+                            writer = csv.writer(f)
+                            if cols: writer.writerow(cols)
+                            writer.writerows(rows)
+                    
+                    # 데이터 내보내기 완료 후 즉시 해당 테이블을 비웁니다. (요구사항 2.5)
+                    cursor.execute("TRUNCATE TABLE game_history")
+                    
+            return True, filename
+        except Exception as e:
+            print(f"[오류] 히스토리 내보내기 및 비우기 실패: {e}")
+            return False, None
 
+    # [수정 반영] 게임 재시작 시에는 다른 로그를 지우지 않고 단어장만 초기화
     def reset_all_tables(self):
         with self.lock:
             self._ensure_connection()
             try:
                 with self.conn.cursor() as cursor:
                     cursor.execute("UPDATE ko_word SET is_use = FALSE, is_use_date = NULL, is_use_user = NULL")
-                    cursor.execute("TRUNCATE TABLE app_logs")
-                    cursor.execute("TRUNCATE TABLE game_history")
-                    cursor.execute("TRUNCATE TABLE game_status") 
                 return True
             except Exception: return False
             
