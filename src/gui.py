@@ -337,7 +337,6 @@ class GameOverWidget(QWidget):
         self.lbl_last_winner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_word_count.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        # [수정] 텍스트 입력 형식 변경을 대비해 변수명 유지
         self.lbl_countdown = QLabel("초기화 대기 중...")
         self.lbl_countdown.setFont(QFont("NanumBarunGothic", 14))
         self.lbl_countdown.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -357,7 +356,6 @@ class GameOverWidget(QWidget):
         self.lbl_last_winner.setText(f"최종 단어를 사용한 시청자 : {d_nick}")
         self.lbl_word_count.setText(f"제시된 단어 수 : {count}")
         
-    # [수정] 외부에서 완성된 문자열을 주입받아 출력하도록 변경
     def update_countdown(self, text):
         self.lbl_countdown.setText(text)
 
@@ -408,7 +406,6 @@ class ChzzkGameGUI(QWidget):
         self.console_window = None
         self.answer_check_enabled = True
         
-        # [수정 반영] 동적 로딩 바를 위한 타이머 및 진행률 변수 신설
         self.progress_timer = QTimer(self)
         self.progress_timer.timeout.connect(self._tick_progress)
         self.current_progress = 0
@@ -660,6 +657,7 @@ class ChzzkGameGUI(QWidget):
         self.log_display.append(formatted_message)
         self.log_display.verticalScrollBar().setValue(self.log_display.verticalScrollBar().maximum())
 
+    # [경량화] FontMetrics 연산을 5단위로 조절하고 무거운 루프 부담 경감
     def set_responsive_text(self, text):
         if not text: return
         length = len(text)
@@ -682,16 +680,15 @@ class ChzzkGameGUI(QWidget):
 
         font = self.lbl_current_word.font()
         font.setPointSize(target_size)
+        
+        # 폰트 매트릭스 반복 생성을 억제하기 위해 단계를 5로 두고 조절
         fm = QFontMetrics(font)
-        
-        bound_rect = fm.boundingRect(0, 0, label_w, label_h, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, formatted_text)
-        
-        while (bound_rect.height() > label_h or bound_rect.width() > label_w) and target_size > 10:
+        while (fm.boundingRect(0, 0, label_w, label_h, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, formatted_text).height() > label_h or 
+               fm.boundingRect(0, 0, label_w, label_h, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, formatted_text).width() > label_w) and target_size > 10:
             target_size -= 5
             font.setPointSize(target_size)
             fm = QFontMetrics(font)
-            bound_rect = fm.boundingRect(0, 0, label_w, label_h, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, formatted_text)
-        
+            
         self.lbl_current_word.setFont(font)
         self.lbl_current_word.setText(formatted_text)
 
@@ -720,6 +717,8 @@ class ChzzkGameGUI(QWidget):
         self.db_manager.start_new_game_session(start_word)
         
         self.set_responsive_text(start_word)
+        
+        # [경량화] self.lbl_current_word.repaint() 및 processEvents() 제거로 부드러운 전환
         
         if restore_time:
             saved_str = os.getenv("last_word_change_time")
@@ -967,7 +966,6 @@ class ChzzkGameGUI(QWidget):
             else:
                 self.log_message(f"[시스템 오류] {fail_msg} (알 수 없는 에러 상태: {result_status})")
 
-    # [수정 반영] 게임 종료 처리 및 동적 로딩 바(초기화 태스크) 연동
     def process_game_over(self, last_word, last_winner):
         self.db_manager.check_and_ban_start_char(last_word)
         self._update_banned_chars_gui()
@@ -984,30 +982,24 @@ class ChzzkGameGUI(QWidget):
         self.game_over_widget.set_stats(last_word, last_winner, self.db_manager.get_used_word_count())
         self.stacked_widget.setCurrentIndex(1)
         
-        # 동적 로딩 초기화
         self.current_progress = 0
         self.target_progress = 0
         self.reset_thread = threading.Thread(target=self._run_initialization_task, args=(start_dt, end_dt), daemon=True)
         self.reset_thread.start()
-        self.progress_timer.start(20) # 20ms마다 UI 갱신
+        # [경량화] 20ms 간격 업데이트를 50ms로 낮춰 UI 스레드 렌더링 부하 최소화
+        self.progress_timer.start(50) 
 
-    # [신규 추가] 실제 백그라운드 DB 초기화 로직 분리 (진행률 마일스톤 삽입)
     def _run_initialization_task(self, start_dt, end_dt):
-        # 1단계: CSV 백업 시작
         self.target_progress = 20
         self.db_manager.export_and_clear_game_history(start_dt, end_dt)
         
-        # 2단계: DB 단어장 리셋 시작
         self.target_progress = 99
         self.db_manager.reset_all_tables()
         
-        # 완료
         self.target_progress = 100
 
-    # [신규 추가] 타이머에 의해 20ms마다 호출되며 로딩바를 부드럽게 증가시킴
     def _tick_progress(self):
         if getattr(self, 'current_progress', 0) < getattr(self, 'target_progress', 0):
-            # 목표치에 도달할 때까지 숫자를 부드럽게 올림
             step = max(1, (self.target_progress - self.current_progress) // 5)
             self.current_progress += step
             if self.current_progress > self.target_progress:
@@ -1019,7 +1011,6 @@ class ChzzkGameGUI(QWidget):
         else:
             self.game_over_widget.update_countdown("초기화 완료! 게임을 재시작합니다...")
 
-        # 진행률이 100%에 도달하고 쓰레드가 완전히 죽었다면 즉시 재시작
         if self.current_progress >= 100 and self.reset_thread and not self.reset_thread.is_alive():
             self.progress_timer.stop()
             self.start_game_logic(self.db_manager.get_random_start_word(), restore_time=False)
