@@ -16,6 +16,8 @@ class DatabaseManager:
         
         self.current_game_id = None
         self.conn = None
+        
+        # [최적화] DB 트랜잭션 전용 락
         self.lock = threading.Lock() 
         
         self.banned_chars = {}
@@ -43,7 +45,6 @@ class DatabaseManager:
                 cursorclass=pymysql.cursors.Cursor,
                 connect_timeout=10 
             )
-                
             print(f"[시스템] DB 연결 성공 (Database: {self.db_name})")
         except Exception as e:
             print(f"[오류] DB 연결 실패: {e}")
@@ -143,10 +144,11 @@ class DatabaseManager:
 
     def check_and_use_word(self, word, nickname):
         word = word.strip()
-        with self.lock:
-            if word[-1] in self.banned_chars:
-                return "forbidden_end_char" 
+        # [최적화] 메모리 조회는 DB 락 외부에서 수행
+        if word[-1] in self.banned_chars:
+            return "forbidden_end_char" 
 
+        with self.lock:
             self._ensure_connection()
             if not self.conn: return "error:DB 연결이 끊어져 있습니다."
             try:
@@ -170,12 +172,12 @@ class DatabaseManager:
                 return f"error:{err_str}"
 
     def check_remaining_words(self, start_char):
+        current_banned = list(self.banned_chars.keys())
         with self.lock:
             self._ensure_connection()
             if not self.conn: return 0
             try:
                 with self.conn.cursor() as cursor:
-                    current_banned = list(self.banned_chars.keys())
                     source_condition = "AND source IN ('URI', 'Standard', 'naver_wiki', 'admin', 'subway', 'wikipedia')"
                     
                     if current_banned:
@@ -211,15 +213,16 @@ class DatabaseManager:
         if not last_word: return
         target_char = last_word[-1] 
         
-        with self.lock:
-            now = datetime.now()
-            expired_chars = []
-            for char, banned_at in self.banned_chars.items():
-                if (now - banned_at).total_seconds() >= 24 * 3600:
-                    expired_chars.append(char)
-            for char in expired_chars:
-                del self.banned_chars[char]
+        # 메모리 정리 (DB 락 불필요)
+        now = datetime.now()
+        expired_chars = []
+        for char, banned_at in self.banned_chars.items():
+            if (now - banned_at).total_seconds() >= 24 * 3600:
+                expired_chars.append(char)
+        for char in expired_chars:
+            del self.banned_chars[char]
 
+        with self.lock:
             self._ensure_connection()
             if not self.conn: return
             try:
@@ -261,18 +264,18 @@ class DatabaseManager:
             except Exception as e:
                 print(f"[오류] 금지 글자 판별 실패: {e}")
 
+    # [최적화] 메모리 기반 명령어는 락이 불필요하여 제거 (메인 스레드 렉 100% 해소)
     def toggle_banned_char(self, char):
-        with self.lock:
-            if char in self.banned_chars:
-                del self.banned_chars[char]
-                return f"[성공] '{char}' 글자가 금지 목록에서 해제되었습니다."
-            else:
-                self.banned_chars[char] = datetime(2099, 12, 31)
-                return f"[성공] '{char}' 글자가 영구 금지 목록에 추가되었습니다."
+        if char in self.banned_chars:
+            del self.banned_chars[char]
+            return f"[성공] '{char}' 글자가 금지 목록에서 해제되었습니다."
+        else:
+            self.banned_chars[char] = datetime(2099, 12, 31)
+            return f"[성공] '{char}' 글자가 영구 금지 목록에 추가되었습니다."
 
+    # [최적화] 마찬가지로 락 제거하여 1초마다 UI를 그릴 때 버벅임을 원천 차단
     def get_banned_end_chars(self):
-        with self.lock:
-            return list(self.banned_chars.keys())
+        return list(self.banned_chars.keys())
 
     def check_rare_end_word(self, end_char):
         with self.lock:
@@ -362,25 +365,6 @@ class DatabaseManager:
                     return str(result[0]) if result else "시작"
             except Exception: return "시작"
 
-    def get_and_use_random_available_word(self, nickname="console-random"):
-        with self.lock:
-            self._ensure_connection()
-            if not self.conn: return None
-            try:
-                with self.conn.cursor() as cursor:
-                    sql_select = "SELECT num, word FROM ko_word WHERE is_use = FALSE AND can_use = TRUE AND available = TRUE ORDER BY RAND() LIMIT 1"
-                    cursor.execute(sql_select)
-                    result = cursor.fetchone()
-                    
-                    if not result: return None
-                    
-                    pk_num, word = result
-                    sql_update = "UPDATE ko_word SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s WHERE num = %s"
-                    cursor.execute(sql_update, (nickname, pk_num))
-                    return str(word)
-            except Exception: return None
-
-    # [수정 반영] 오직 game_history만 시작/종료 시간에 맞춰 백업 후 비움
     def export_and_clear_game_history(self, start_dt, end_dt):
         try:
             logs_dir = "logs"
@@ -406,7 +390,6 @@ class DatabaseManager:
                             if cols: writer.writerow(cols)
                             writer.writerows(rows)
                     
-                    # 데이터 내보내기 완료 후 즉시 해당 테이블을 비웁니다. (요구사항 2.5)
                     cursor.execute("TRUNCATE TABLE game_history")
                     
             return True, filename
@@ -414,7 +397,6 @@ class DatabaseManager:
             print(f"[오류] 히스토리 내보내기 및 비우기 실패: {e}")
             return False, None
 
-    # [수정 반영] 게임 재시작 시에는 다른 로그를 지우지 않고 단어장만 초기화
     def reset_all_tables(self):
         with self.lock:
             self._ensure_connection()

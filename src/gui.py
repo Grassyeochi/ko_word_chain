@@ -336,10 +336,13 @@ class GameOverWidget(QWidget):
         self.lbl_last_word.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_last_winner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_word_count.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_countdown = QLabel("10초 후에 다시 시작합니다....")
+        
+        # [수정] 텍스트 입력 형식 변경을 대비해 변수명 유지
+        self.lbl_countdown = QLabel("초기화 대기 중...")
         self.lbl_countdown.setFont(QFont("NanumBarunGothic", 14))
         self.lbl_countdown.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_countdown.setStyleSheet("color: #888888; margin-top: 30px;")
+        
         layout.addWidget(self.lbl_title)
         layout.addWidget(self.lbl_subtitle)
         layout.addWidget(self.lbl_last_word)
@@ -354,14 +357,14 @@ class GameOverWidget(QWidget):
         self.lbl_last_winner.setText(f"최종 단어를 사용한 시청자 : {d_nick}")
         self.lbl_word_count.setText(f"제시된 단어 수 : {count}")
         
-    def update_countdown(self, seconds):
-        self.lbl_countdown.setText(f"{seconds}초 후에 다시 시작합니다....")
+    # [수정] 외부에서 완성된 문자열을 주입받아 출력하도록 변경
+    def update_countdown(self, text):
+        self.lbl_countdown.setText(text)
 
 class ChzzkGameGUI(QWidget):
     def __init__(self):
         super().__init__()
         
-        # [신규 추가] 중복 실행 방지용 로컬 소켓 바인딩
         self._instance_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             self._instance_socket.bind(("127.0.0.1", 58249))
@@ -377,7 +380,7 @@ class ChzzkGameGUI(QWidget):
         
         self.start_time = None 
         self.program_start_dt = datetime.now() 
-        self.current_game_start_dt = datetime.now() # CSV 백업을 위한 게임 시작시간 변수
+        self.current_game_start_dt = datetime.now() 
         self.last_change_time = time.time()
         self.current_word_text = ""
         
@@ -393,8 +396,8 @@ class ChzzkGameGUI(QWidget):
         self.db_reset_date = os.getenv("db_reset_time", "알 수 없음")
         
         self.is_paused = False
-
         self.input_locked = False
+        
         self.unlock_fallback_timer = QTimer(self)
         self.unlock_fallback_timer.setSingleShot(True)
         self.unlock_fallback_timer.timeout.connect(self.force_unlock_input)
@@ -405,12 +408,13 @@ class ChzzkGameGUI(QWidget):
         self.console_window = None
         self.answer_check_enabled = True
         
-        self.restart_timer = QTimer(self)
-        self.restart_timer.timeout.connect(self.tick_restart_countdown)
-        self.countdown_val = 10
+        # [수정 반영] 동적 로딩 바를 위한 타이머 및 진행률 변수 신설
+        self.progress_timer = QTimer(self)
+        self.progress_timer.timeout.connect(self._tick_progress)
+        self.current_progress = 0
+        self.target_progress = 0
 
         self.reset_thread = None
-        
         self.last_offline_log_time = {} 
 
         self.init_ui()
@@ -491,7 +495,6 @@ class ChzzkGameGUI(QWidget):
         shutdown_dlg.set_status("로그 및 데이터 백업 중...")
         end_dt = datetime.now()
         start_dt = getattr(self, 'current_game_start_dt', end_dt)
-        # [수정 반영] 프로그램 강제 종료 시 game_history 파일 백업 및 비우기
         self.db_manager.export_and_clear_game_history(start_dt, end_dt)
         time.sleep(0.5) 
         
@@ -711,15 +714,12 @@ class ChzzkGameGUI(QWidget):
         self.start_time = time.time()
         self.current_word_text = start_word
         
-        # [추가 반영] 현재 라운드 게임 시작 시간을 명확히 기록 (CSV 파일명 용도)
         self.current_game_start_dt = datetime.now()
         
         self.current_fail_count = 0
         self.db_manager.start_new_game_session(start_word)
         
         self.set_responsive_text(start_word)
-        self.lbl_current_word.repaint()     
-        QApplication.processEvents()        
         
         if restore_time:
             saved_str = os.getenv("last_word_change_time")
@@ -967,16 +967,15 @@ class ChzzkGameGUI(QWidget):
             else:
                 self.log_message(f"[시스템 오류] {fail_msg} (알 수 없는 에러 상태: {result_status})")
 
+    # [수정 반영] 게임 종료 처리 및 동적 로딩 바(초기화 태스크) 연동
     def process_game_over(self, last_word, last_winner):
         self.db_manager.check_and_ban_start_char(last_word)
         self._update_banned_chars_gui()
         
         self.db_manager.end_game_session(self.current_fail_count, last_word, self.last_platform, self.last_user)
         
-        # [수정 반영] 게임 종료 시 game_history만 전용 백업 수행 후 비우기
         end_dt = datetime.now()
         start_dt = getattr(self, 'current_game_start_dt', end_dt)
-        threading.Thread(target=self.db_manager.export_and_clear_game_history, args=(start_dt, end_dt), daemon=True).start()
         
         today_str = datetime.now().strftime("%Y.%m.%d %H:%M:%S")
         update_env_variable("db_reset_time", today_str)
@@ -984,26 +983,44 @@ class ChzzkGameGUI(QWidget):
         
         self.game_over_widget.set_stats(last_word, last_winner, self.db_manager.get_used_word_count())
         self.stacked_widget.setCurrentIndex(1)
-        self.countdown_val = 10
-        self.game_over_widget.update_countdown(self.countdown_val)
-        self.restart_timer.start(1000)
+        
+        # 동적 로딩 초기화
+        self.current_progress = 0
+        self.target_progress = 0
+        self.reset_thread = threading.Thread(target=self._run_initialization_task, args=(start_dt, end_dt), daemon=True)
+        self.reset_thread.start()
+        self.progress_timer.start(20) # 20ms마다 UI 갱신
 
-    def tick_restart_countdown(self):
-        self.countdown_val -= 1
-        self.game_over_widget.update_countdown(self.countdown_val)
+    # [신규 추가] 실제 백그라운드 DB 초기화 로직 분리 (진행률 마일스톤 삽입)
+    def _run_initialization_task(self, start_dt, end_dt):
+        # 1단계: CSV 백업 시작
+        self.target_progress = 20
+        self.db_manager.export_and_clear_game_history(start_dt, end_dt)
+        
+        # 2단계: DB 단어장 리셋 시작
+        self.target_progress = 99
+        self.db_manager.reset_all_tables()
+        
+        # 완료
+        self.target_progress = 100
 
-        if self.countdown_val == 9:
-            self.reset_thread = threading.Thread(target=self.db_manager.reset_all_tables, daemon=True)
-            self.reset_thread.start()
+    # [신규 추가] 타이머에 의해 20ms마다 호출되며 로딩바를 부드럽게 증가시킴
+    def _tick_progress(self):
+        if getattr(self, 'current_progress', 0) < getattr(self, 'target_progress', 0):
+            # 목표치에 도달할 때까지 숫자를 부드럽게 올림
+            step = max(1, (self.target_progress - self.current_progress) // 5)
+            self.current_progress += step
+            if self.current_progress > self.target_progress:
+                self.current_progress = self.target_progress
+        
+        left_percent = 100 - self.current_progress
+        if left_percent > 0:
+            self.game_over_widget.update_countdown(f"게임 초기화 중... (완료까지 {left_percent}% 남음)")
+        else:
+            self.game_over_widget.update_countdown("초기화 완료! 게임을 재시작합니다...")
 
-        if self.countdown_val <= 0:
-            self.restart_timer.stop()
-            self.restart_game_auto()
-
-    def restart_game_auto(self):
-        if self.reset_thread and self.reset_thread.is_alive():
-            self.log_message("[시스템] 게임 재시작 최적화 진행 중... (약간의 대기)")
-            self.reset_thread.join()
-
-        self.start_game_logic(self.db_manager.get_random_start_word(), restore_time=False)
-        self.stacked_widget.setCurrentIndex(0)
+        # 진행률이 100%에 도달하고 쓰레드가 완전히 죽었다면 즉시 재시작
+        if self.current_progress >= 100 and self.reset_thread and not self.reset_thread.is_alive():
+            self.progress_timer.stop()
+            self.start_game_logic(self.db_manager.get_random_start_word(), restore_time=False)
+            self.stacked_widget.setCurrentIndex(0)
