@@ -16,7 +16,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QTextEdit, QLineEdit, QStackedWidget,
                              QDialog, QProgressBar, QApplication)
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal, QRect
-from PyQt6.QtGui import QFont, QCloseEvent, QFontMetrics
+# [수정] 이미지를 띄우기 위한 QPixmap 임포트 추가
+from PyQt6.QtGui import QFont, QCloseEvent, QFontMetrics, QPixmap
 
 from .signals import GameSignals
 from .database import DatabaseManager
@@ -274,6 +275,8 @@ class ConsoleWindow(QWidget):
                 self.main_window.current_word_text = new_word
                 self.main_window.set_responsive_text(new_word)
                 self.main_window.update_hint(new_word[-1])
+                # [수정] 명령어 단어 변경 시에도 이미지 표출 확인
+                self.main_window.display_word_image(new_word)
                 self.log(f"[성공] 현재 단어가 '{new_word}'(으)로 변경되었습니다.")
             else:
                 self.log("[오류] 사용법: chcw {단어}")
@@ -376,6 +379,10 @@ class ChzzkGameGUI(QWidget):
         self.db_manager = DatabaseManager()
         self.profanity_filter = ProfanityFilter()
         
+        # [신규] 단어-이미지 매핑 변수 선언 및 로드
+        self.word_image_map = {}
+        self.load_word_images()
+        
         self.start_time = None 
         self.program_start_dt = datetime.now() 
         self.current_game_start_dt = datetime.now() 
@@ -421,6 +428,21 @@ class ChzzkGameGUI(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_runtime)
         self.timer.start(1000)
+
+    # [신규] 이미지 매핑 텍스트 파일(word_image.txt) 1회 로드 로직
+    def load_word_images(self):
+        filepath = resource_path(os.path.join("image", "word_image.txt"))
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or ';' not in line: continue
+                        word, img_name = line.split(';', 1)
+                        self.word_image_map[word.strip()] = img_name.strip()
+                print(f"[시스템] 이미지 매핑 목록을 성공적으로 로드했습니다. (총 {len(self.word_image_map)}개)")
+            except Exception as e:
+                print(f"[오류] 이미지 매핑 파일 로드 실패: {e}")
 
     def safe_log_unknown_word(self, word):
         filepath = resource_path("unknown_words.txt")
@@ -614,12 +636,27 @@ class ChzzkGameGUI(QWidget):
         lbl_cw_title.setFont(QFont("NanumBarunGothic", 24))
         lbl_cw_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl_cw_title.setStyleSheet("color: #AAA;")
+        game_area.addWidget(lbl_cw_title)
+        
+        # [수정] 단어와 이미지를 가로로 나란히 배치하기 위한 레이아웃 구성
+        word_image_layout = QHBoxLayout()
+        
         self.lbl_current_word = QLabel("...")
         self.lbl_current_word.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.lbl_current_word.setFont(QFont("NanumBarunGothic", 100, QFont.Weight.Bold))
         self.lbl_current_word.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_current_word.setStyleSheet("color: white;")
         self.lbl_current_word.setWordWrap(True)
+        
+        self.lbl_word_image = QLabel()
+        self.lbl_word_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_word_image.hide() # 기본적으로는 이미지를 숨김 처리
+        
+        word_image_layout.addWidget(self.lbl_current_word, stretch=7)
+        word_image_layout.addWidget(self.lbl_word_image, stretch=3)
+        
+        game_area.addLayout(word_image_layout, stretch=3)
+        
         self.lbl_pause_status = QLabel("⛔ 정답 입력 중지됨 ⛔")
         self.lbl_pause_status.setFont(QFont("NanumBarunGothic", 30, QFont.Weight.Bold))
         self.lbl_pause_status.setStyleSheet("color: #FF4444;")
@@ -629,9 +666,6 @@ class ChzzkGameGUI(QWidget):
         self.lbl_next_hint.setFont(QFont("NanumBarunGothic", 20))
         self.lbl_next_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_next_hint.setStyleSheet("color: #888;")
-        game_area.addWidget(lbl_cw_title)
-        
-        game_area.addWidget(self.lbl_current_word, 3)
         
         game_area.addWidget(self.lbl_pause_status)
         game_area.addWidget(self.lbl_next_hint)
@@ -657,7 +691,22 @@ class ChzzkGameGUI(QWidget):
         self.log_display.append(formatted_message)
         self.log_display.verticalScrollBar().setValue(self.log_display.verticalScrollBar().maximum())
 
-    # [경량화] FontMetrics 연산을 5단위로 조절하고 무거운 루프 부담 경감
+    # [신규] 단어가 매핑되어 있다면 지정된 경로의 이미지를 250x250 비율로 띄우는 메서드
+    def display_word_image(self, word):
+        if word in self.word_image_map:
+            filename = self.word_image_map[word]
+            img_path = resource_path(os.path.join("image", filename))
+            if os.path.exists(img_path):
+                pixmap = QPixmap(img_path)
+                # 원본 500x500을 화면 밸런스에 맞게 부드럽게 축소 (최대 250x250 유지)
+                pixmap = pixmap.scaled(250, 250, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                self.lbl_word_image.setPixmap(pixmap)
+                self.lbl_word_image.show()
+                return
+        # 매핑된 파일이 없거나 파일 경로 오류 시 이미지 라벨 숨김
+        self.lbl_word_image.clear()
+        self.lbl_word_image.hide()
+
     def set_responsive_text(self, text):
         if not text: return
         length = len(text)
@@ -681,7 +730,6 @@ class ChzzkGameGUI(QWidget):
         font = self.lbl_current_word.font()
         font.setPointSize(target_size)
         
-        # 폰트 매트릭스 반복 생성을 억제하기 위해 단계를 5로 두고 조절
         fm = QFontMetrics(font)
         while (fm.boundingRect(0, 0, label_w, label_h, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, formatted_text).height() > label_h or 
                fm.boundingRect(0, 0, label_w, label_h, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, formatted_text).width() > label_w) and target_size > 10:
@@ -717,8 +765,8 @@ class ChzzkGameGUI(QWidget):
         self.db_manager.start_new_game_session(start_word)
         
         self.set_responsive_text(start_word)
-        
-        # [경량화] self.lbl_current_word.repaint() 및 processEvents() 제거로 부드러운 전환
+        # [추가] 시작 시에도 단어 매핑 이미지 적용
+        self.display_word_image(start_word)
         
         if restore_time:
             saved_str = os.getenv("last_word_change_time")
@@ -773,6 +821,7 @@ class ChzzkGameGUI(QWidget):
                 font = self.lbl_current_word.font()
                 font.setPointSize(50)
                 self.lbl_current_word.setFont(font)
+                self.lbl_word_image.hide() # 오프라인 시 이미지도 임시 숨김
                 self.log_message("[시스템] 모든 방송 연결이 끊겼습니다. 재접속 대기 중...")
         else:
             now = time.time()
@@ -791,6 +840,7 @@ class ChzzkGameGUI(QWidget):
             self.is_global_offline = False
             self.lbl_current_word.setStyleSheet("color: white;")
             self.set_responsive_text(self.current_word_text)
+            self.display_word_image(self.current_word_text) # 재연결 시 이미지 복구
             self.log_message("[시스템] 방송 연결 복구. 게임 재개.")
 
     def update_runtime(self):
@@ -925,6 +975,8 @@ class ChzzkGameGUI(QWidget):
 
             self.current_word_text = word
             self.set_responsive_text(word)
+            # [추가] 정답 판정 후 이미지 표출 처리 연동
+            self.display_word_image(word)
             
             self.last_change_time = time.time()
             update_env_variable("last_word_change_time", datetime.fromtimestamp(self.last_change_time).strftime("%Y.%m.%d %H:%M:%S"))
@@ -986,7 +1038,6 @@ class ChzzkGameGUI(QWidget):
         self.target_progress = 0
         self.reset_thread = threading.Thread(target=self._run_initialization_task, args=(start_dt, end_dt), daemon=True)
         self.reset_thread.start()
-        # [경량화] 20ms 간격 업데이트를 50ms로 낮춰 UI 스레드 렌더링 부하 최소화
         self.progress_timer.start(50) 
 
     def _run_initialization_task(self, start_dt, end_dt):
