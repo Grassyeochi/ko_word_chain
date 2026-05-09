@@ -1,114 +1,112 @@
 import os
+import glob
 import re
-import io
+import zipfile
+import subprocess
 from dotenv import load_dotenv
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-from google.oauth2 import service_account
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaFileUpload
 
-# .env 파일 로드
+# 1. 환경 변수 로드 (.env)
 load_dotenv()
 
-# .env에서 인증 정보 파일(json) 경로 가져오기
-SERVICE_ACCOUNT_FILE = os.getenv('CREDENTIALS_JSON_PATH')
-SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
+LOCAL_WORKSPACE_PATH = os.getenv("LOCAL_WORKSPACE_PATH")
+GDRIVE_PATH = os.getenv("GDRIVE_PATH") # Google Drive 폴더 ID
+GDRIVE_CREDENTIALS_JSON = os.getenv("GDRIVE_CREDENTIALS_JSON") # 새로 발급받은 OAuth JSON 경로
 
-# 1. 인증 및 서비스 객체 생성
+# 구글 드라이브 파일 쓰기 권한 스코프
+SCOPES = ['https://www.googleapis.com/auth/drive.file']
+
 def authenticate_gdrive():
-    creds = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-    return build('drive', 'v3', credentials=creds)
-
-# 2. 구글 드라이브 파일 다운로드 함수
-def download_file(service, file_id, file_path):
-    request = service.files().get_media(fileId=file_id)
-    fh = io.FileIO(file_path, 'wb')
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while done is False:
-        status, done = downloader.next_chunk()
-
-# 3. 위치 A: word_chain_N.zip 파일 비교 및 다운로드
-def sync_word_chain_zip(service, gdrive_folder_id, local_path):
-    if not os.path.exists(local_path):
-        os.makedirs(local_path)
-
-    pattern = r"word_chain_([0-9.]+)\.zip"
+    """OAuth 2.0 인증 및 토큰 관리 함수"""
+    creds = None
+    token_path = os.path.join(LOCAL_WORKSPACE_PATH, 'token.json')
     
-    local_max_n = -1.0
-    for file_name in os.listdir(local_path):
-        match = re.match(pattern, file_name)
-        if match:
-            local_max_n = max(local_max_n, float(match.group(1)))
-
-    query = f"'{gdrive_folder_id}' in parents and name contains 'word_chain_' and mimeType='application/zip'"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
-    items = results.get('files', [])
-
-    gdrive_max_n = -1.0
-    latest_gdrive_file = None
-    for item in items:
-        match = re.match(pattern, item['name'])
-        if match:
-            n_value = float(match.group(1))
-            if n_value > gdrive_max_n:
-                gdrive_max_n = n_value
-                latest_gdrive_file = item
-
-    if gdrive_max_n > local_max_n and latest_gdrive_file:
-        print(f"[보고] 새로운 버전(v{gdrive_max_n})이 확인되어 다운로드를 시작합니다.")
-        download_path = os.path.join(local_path, latest_gdrive_file['name'])
-        download_file(service, latest_gdrive_file['id'], download_path)
-        print(f"[완료] {latest_gdrive_file['name']} 다운로드가 완료되었습니다.")
-    else:
-        print("[보고] 드라이브의 zip 파일 버전이 로컬과 같거나 작으므로 아무 작업도 수행하지 않습니다.")
-
-# 4. 위치 B: 이미지 파일 비교 및 누락분 다운로드
-def sync_images(service, gdrive_folder_id, local_path):
-    if not os.path.exists(local_path):
-        os.makedirs(local_path)
-
-    local_images = set(os.listdir(local_path))
-
-    query = f"'{gdrive_folder_id}' in parents and mimeType contains 'image/'"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
-    items = results.get('files', [])
-
-    download_count = 0
-    for item in items:
-        if item['name'] not in local_images:
-            print(f"[보고] 누락된 이미지 확인: {item['name']} 다운로드를 시작합니다.")
-            download_path = os.path.join(local_path, item['name'])
-            download_file(service, item['id'], download_path)
-            download_count += 1
+    # 이전에 인증하여 저장된 토큰이 있는지 확인
+    if os.path.exists(token_path):
+        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
     
-    if download_count == 0:
-        print("[보고] 누락된 이미지 파일이 없습니다.")
-    else:
-        print(f"[완료] 총 {download_count}개의 이미지를 다운로드하였습니다.")
-
-# 메인 실행부
-if __name__ == '__main__':
-    # .env 파일에서 환경 변수 불러오기
-    GDRIVE_FOLDER_A_ID = os.getenv('GDRIVE_FOLDER_A_ID')
-    LOCAL_PATH_A = os.getenv('LOCAL_PATH_A')
-    
-    GDRIVE_FOLDER_B_ID = os.getenv('GDRIVE_FOLDER_B_ID')
-    LOCAL_PATH_B = os.getenv('LOCAL_PATH_B')
-
-    # 환경 변수 누락 여부 검증
-    if not all([SERVICE_ACCOUNT_FILE, GDRIVE_FOLDER_A_ID, LOCAL_PATH_A, GDRIVE_FOLDER_B_ID, LOCAL_PATH_B]):
-        print("[경고 보고] .env 파일에 필요한 설정값이 일부 누락되었습니다. 설정을 다시 확인해 주십시오.")
-    else:
-        # 서비스 객체 초기화 및 동기화 실행
-        try:
-            drive_service = authenticate_gdrive()
+    # 유효한 인증 정보가 없으면 로그인 절차 진행
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                GDRIVE_CREDENTIALS_JSON, SCOPES)
+            creds = flow.run_local_server(port=0)
+        
+        # 새로운 인증 정보를 token.json에 저장
+        with open(token_path, 'w') as token:
+            token.write(creds.to_json())
             
-            print("--- [Task 1] word_chain_N.zip 동기화 검토 ---")
-            sync_word_chain_zip(drive_service, GDRIVE_FOLDER_A_ID, LOCAL_PATH_A)
+    return creds
 
-            print("\n--- [Task 2] 이미지 폴더 누락본 동기화 검토 ---")
-            sync_images(drive_service, GDRIVE_FOLDER_B_ID, LOCAL_PATH_B)
-            
-        except Exception as e:
-            print(f"[오류 보고] 실행 중 다음 오류가 발생했습니다: {e}")
+def main():
+    print("[보고] 작업을 시작합니다.")
+
+    # 4. PyInstaller 빌드 실행
+    print("[진행] PyInstaller를 통해 실행 파일을 빌드합니다.")
+    build_command = [
+        "pyinstaller", "--noconfirm", "--onefile", "--noconsole", "--clean", 
+        "--name", "ChzzkWordChain", "--collect-all", "certifi", "main.py"
+    ]
+    subprocess.run(build_command, cwd=LOCAL_WORKSPACE_PATH, check=True)
+
+    # 5. 빌드 후 생성된 spec 파일 삭제
+    spec_file_path = os.path.join(LOCAL_WORKSPACE_PATH, "ChzzkWordChain.spec")
+    if os.path.exists(spec_file_path):
+        os.remove(spec_file_path)
+        print("[진행] ChzzkWordChain.spec 파일이 삭제되었습니다.")
+
+    # 6. 실행 파일 압축 및 네이밍 (N 값 계산)
+    dist_dir = os.path.join(LOCAL_WORKSPACE_PATH, "dist")
+    exe_file_path = os.path.join(dist_dir, "ChzzkWordChain.exe")
+    
+    zip_pattern = os.path.join(dist_dir, "word_chain_0.*.zip")
+    existing_zips = glob.glob(zip_pattern)
+    
+    max_m = 0
+    for zip_file in existing_zips:
+        filename = os.path.basename(zip_file)
+        match = re.search(r'word_chain_0\.(\d+)\.zip', filename)
+        if match:
+            m = int(match.group(1))
+            if m > max_m:
+                max_m = m
+                
+    n = max_m + 1
+    zip_filename = f"word_chain_0.{n}.zip"
+    zip_filepath = os.path.join(dist_dir, zip_filename)
+
+    with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        zipf.write(exe_file_path, arcname="ChzzkWordChain.exe")
+    print(f"[진행] 파일 압축 완료: {zip_filename}")
+
+    # 7. 구글 드라이브 업로드 (OAuth 2.0 적용)
+    print("[진행] 구글 드라이브 업로드를 시작합니다.")
+    try:
+        creds = authenticate_gdrive()
+        drive_service = build('drive', 'v3', credentials=creds)
+        
+        file_metadata = {
+            'name': zip_filename,
+            'parents': [GDRIVE_PATH]
+        }
+        media = MediaFileUpload(zip_filepath, mimetype='application/zip')
+        
+        drive_service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id'
+        ).execute()
+        print("[완료] 구글 드라이브 업로드가 완료되었습니다.")
+    except Exception as e:
+        print(f"[오류] 드라이브 업로드 중 문제가 발생했습니다: {e}")
+
+    print("[보고] 모든 지시 사항의 처리가 완료되었습니다.")
+
+if __name__ == "__main__":
+    main()
