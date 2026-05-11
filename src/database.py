@@ -17,9 +17,7 @@ class DatabaseManager:
         self.current_game_id = None
         self.conn = None
         
-        # [최적화] DB 트랜잭션 전용 락
         self.lock = threading.Lock() 
-        
         self.banned_chars = {}
         
         self.connect()
@@ -144,7 +142,6 @@ class DatabaseManager:
 
     def check_and_use_word(self, word, nickname):
         word = word.strip()
-        # [최적화] 메모리 조회는 DB 락 외부에서 수행
         if word[-1] in self.banned_chars:
             return "forbidden_end_char" 
 
@@ -153,12 +150,13 @@ class DatabaseManager:
             if not self.conn: return "error:DB 연결이 끊어져 있습니다."
             try:
                 with self.conn.cursor() as cursor:
-                    sql_check = "SELECT num, is_use, can_use, available FROM ko_word WHERE word = %s"
+                    # [수정 반영] 이미지 처리를 위해 source 값도 함께 가져오도록 쿼리 수정
+                    sql_check = "SELECT num, is_use, can_use, available, source FROM ko_word WHERE word = %s"
                     cursor.execute(sql_check, (word,))
                     result = cursor.fetchone()
 
                     if not result: return "not_found"
-                    pk_num, is_use, can_use, available = result
+                    pk_num, is_use, can_use, available, source = result
 
                     if not available: return "unavailable"
                     if not can_use: return "forbidden"
@@ -166,7 +164,9 @@ class DatabaseManager:
 
                     sql_update = "UPDATE ko_word SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s WHERE num = %s AND is_use = FALSE"
                     affected = cursor.execute(sql_update, (nickname, pk_num))
-                    return "success" if affected > 0 else "used"
+                    
+                    # [수정 반영] 성공 시 source 값을 콜론(:)으로 묶어 함께 반환
+                    return f"success:{source}" if affected > 0 else "used"
             except Exception as e:
                 err_str = str(e).replace('\n', ' ')
                 return f"error:{err_str}"
@@ -213,7 +213,6 @@ class DatabaseManager:
         if not last_word: return
         target_char = last_word[-1] 
         
-        # 메모리 정리 (DB 락 불필요)
         now = datetime.now()
         expired_chars = []
         for char, banned_at in self.banned_chars.items():
@@ -264,7 +263,6 @@ class DatabaseManager:
             except Exception as e:
                 print(f"[오류] 금지 글자 판별 실패: {e}")
 
-    # [최적화] 메모리 기반 명령어는 락이 불필요하여 제거 (메인 스레드 렉 100% 해소)
     def toggle_banned_char(self, char):
         if char in self.banned_chars:
             del self.banned_chars[char]
@@ -273,7 +271,6 @@ class DatabaseManager:
             self.banned_chars[char] = datetime(2099, 12, 31)
             return f"[성공] '{char}' 글자가 영구 금지 목록에 추가되었습니다."
 
-    # [최적화] 마찬가지로 락 제거하여 1초마다 UI를 그릴 때 버벅임을 원천 차단
     def get_banned_end_chars(self):
         return list(self.banned_chars.keys())
 

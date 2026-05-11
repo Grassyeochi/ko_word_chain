@@ -244,7 +244,6 @@ class ConsoleWindow(QWidget):
         layout = QVBoxLayout()
         self.output_area = QTextEdit()
         self.output_area.setReadOnly(True)
-        # [최적화] 콘솔 창 메모리 점유율 및 렌더링 렉 방지
         self.output_area.document().setMaximumBlockCount(500)
         self.output_area.setStyleSheet("border: 1px solid #555;")
         self.input_line = QLineEdit()
@@ -273,7 +272,6 @@ class ConsoleWindow(QWidget):
         if command == "chcw":
             if len(args) == 1:
                 new_word = args[0]
-                # [수정] 순수 한글 정규식 검증 방어벽
                 if re.fullmatch(r'[가-힣]+', new_word):
                     self.main_window.current_word_text = new_word
                     self.main_window.set_responsive_text(new_word)
@@ -383,11 +381,9 @@ class ChzzkGameGUI(QWidget):
         self.db_manager = DatabaseManager()
         self.profanity_filter = ProfanityFilter()
         
-        # [최적화] 모르는 단어 중복 검사를 O(1) 해시로 전환하기 위한 메모리 셋(Set) 캐시
         self.unknown_words_cache = set()
         self._load_unknown_words_cache()
 
-        # [최적화] QPixmap 객체를 리사이즈 연산 없이 원본 그대로 메모리에 캐싱
         self.word_image_map = {}
         
         self.start_time = None 
@@ -429,7 +425,7 @@ class ChzzkGameGUI(QWidget):
         self.last_offline_log_time = {} 
 
         self.init_ui()
-        self.load_word_images() # QPixmap 생성은 QApplication (init_ui 내부) 초기화 이후에 실행되어야 함
+        self.load_word_images() 
         self.setup_connections()
         
         QTimer.singleShot(100, self.run_startup_sequence)
@@ -437,7 +433,6 @@ class ChzzkGameGUI(QWidget):
         self.timer.timeout.connect(self.update_runtime)
         self.timer.start(1000)
 
-    # [최적화] 미등록 단어 파일 캐싱 로직
     def _load_unknown_words_cache(self):
         filepath = resource_path("unknown_words.txt")
         if os.path.exists(filepath):
@@ -446,7 +441,6 @@ class ChzzkGameGUI(QWidget):
                     self.unknown_words_cache = set(f.read().splitlines())
             except Exception: pass
 
-    # [최적화 & 기능 추가] 이미지 매핑 목록을 QPixmap으로 메모리에 1회 로드하여 렌더링 코스트 제로화
     def load_word_images(self):
         filepath = resource_path(os.path.join("image", "word_image.txt"))
         if os.path.exists(filepath):
@@ -459,13 +453,11 @@ class ChzzkGameGUI(QWidget):
                         word = word.strip()
                         img_path = resource_path(os.path.join("image", img_name.strip()))
                         if os.path.exists(img_path):
-                            # 이미지는 250x250 이므로 스케일링 연산 없이 즉시 QPixmap 저장
                             self.word_image_map[word] = QPixmap(img_path)
                 print(f"[시스템] 이미지 매핑 캐싱을 완료했습니다. (총 {len(self.word_image_map)}개)")
             except Exception as e:
                 print(f"[오류] 이미지 매핑 파일 로드 실패: {e}")
 
-    # [최적화] O(1) 메모리 검색을 통해 파일 I/O를 원천 차단
     def safe_log_unknown_word(self, word):
         if word in self.unknown_words_cache:
             return 
@@ -670,7 +662,6 @@ class ChzzkGameGUI(QWidget):
         
         self.lbl_word_image = QLabel()
         self.lbl_word_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # [수정 반영] 이미지 라벨에 약간의 흰색 패딩과 둥근 테두리 적용 (배경색 흰색)
         self.lbl_word_image.setStyleSheet("background-color: white; padding: 5px; border-radius: 8px;")
         self.lbl_word_image.hide()
         
@@ -713,7 +704,6 @@ class ChzzkGameGUI(QWidget):
         self.log_display.append(formatted_message)
         self.log_display.verticalScrollBar().setValue(self.log_display.verticalScrollBar().maximum())
 
-    # [최적화] 캐싱된 QPixmap을 즉시 불러와 부하 최소화
     def display_word_image(self, word):
         if word in self.word_image_map:
             self.lbl_word_image.setPixmap(self.word_image_map[word])
@@ -956,7 +946,7 @@ class ChzzkGameGUI(QWidget):
             result = self.db_manager.check_and_use_word(word, nickname)
             is_game_over = False
 
-            if result == "success":
+            if result.startswith("success"):
                 next_starts = apply_dueum_rule(word[-1])
                 any_left = False
                 for char in next_starts:
@@ -973,6 +963,13 @@ class ChzzkGameGUI(QWidget):
             self.signals.game_check_result.emit(f"error:{err_str}", platform, nickname, word, False)
 
     def on_word_check_finished(self, result_status, platform, nickname, word, is_game_over):
+        source = ""
+        if result_status.startswith("success"):
+            parts = result_status.split(":", 1)
+            result_status = parts[0]
+            if len(parts) > 1:
+                source = parts[1]
+
         if result_status == "success":
             QTimer.singleShot(1000, self.unlock_input)
             
@@ -989,7 +986,13 @@ class ChzzkGameGUI(QWidget):
 
             self.current_word_text = word
             self.set_responsive_text(word)
-            self.display_word_image(word)
+            
+            # [수정 반영] 시청자 입력 정답 시, source가 admin_spec 일 때만 이미지 표출
+            if source == "admin_spec":
+                self.display_word_image(word)
+            else:
+                self.lbl_word_image.clear()
+                self.lbl_word_image.hide()
             
             self.last_change_time = time.time()
             update_env_variable("last_word_change_time", datetime.fromtimestamp(self.last_change_time).strftime("%Y.%m.%d %H:%M:%S"))
