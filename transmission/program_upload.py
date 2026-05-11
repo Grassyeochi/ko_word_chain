@@ -4,7 +4,9 @@ import re
 import zipfile
 import subprocess
 from dotenv import load_dotenv
-from google.oauth2 import service_account
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
@@ -13,7 +15,35 @@ load_dotenv()
 
 LOCAL_WORKSPACE_PATH = os.getenv("LOCAL_WORKSPACE_PATH")
 GDRIVE_PATH = os.getenv("GDRIVE_PATH") # Google Drive 폴더 ID
-GDRIVE_CREDENTIALS_JSON = os.getenv("GDRIVE_CREDENTIALS_JSON")
+GDRIVE_CREDENTIALS_JSON = os.getenv("GDRIVE_CREDENTIALS_JSON") # 새로 발급받은 OAuth 클라이언트 JSON 경로
+
+# 구글 드라이브 파일 쓰기 권한 스코프
+SCOPES = ['https://www.googleapis.com/auth/drive.file']
+
+def authenticate_gdrive():
+    """OAuth 2.0 인증 및 token.json 관리 함수"""
+    creds = None
+    token_path = os.path.join(LOCAL_WORKSPACE_PATH, 'token.json')
+    
+    # 이전에 인증하여 저장된 토큰이 있는지 확인
+    if os.path.exists(token_path):
+        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+    
+    # 유효한 인증 정보가 없으면 로그인 절차 진행
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            # InstalledAppFlow를 통한 OAuth 2.0 인증 진행
+            flow = InstalledAppFlow.from_client_secrets_file(
+                GDRIVE_CREDENTIALS_JSON, SCOPES)
+            creds = flow.run_local_server(port=0)
+        
+        # 새로운 인증 정보를 token.json에 저장
+        with open(token_path, 'w') as token:
+            token.write(creds.to_json())
+            
+    return creds
 
 def main():
     print("[보고] 작업을 시작합니다.")
@@ -56,14 +86,12 @@ def main():
         zipf.write(exe_file_path, arcname="ChzzkWordChain.exe")
     print(f"[진행] 파일 압축 완료: {zip_filename}")
 
-    # 7. 구글 드라이브 업로드
+    # 7. 구글 드라이브 업로드 (OAuth 2.0 적용)
     print("[진행] 구글 드라이브 업로드를 시작합니다.")
-    if GDRIVE_CREDENTIALS_JSON and os.path.exists(GDRIVE_CREDENTIALS_JSON):
-        credentials = service_account.Credentials.from_service_account_file(
-            GDRIVE_CREDENTIALS_JSON, 
-            scopes=["https://www.googleapis.com/auth/drive.file"]
-        )
-        drive_service = build('drive', 'v3', credentials=credentials)
+    try:
+        # OAuth 2.0 인증 객체 획득
+        creds = authenticate_gdrive()
+        drive_service = build('drive', 'v3', credentials=creds)
         
         file_metadata = {
             'name': zip_filename,
@@ -76,9 +104,9 @@ def main():
             media_body=media,
             fields='id'
         ).execute()
-        print("[완료] 구글 드라이브 업로드가 완료되었습니다.")
-    else:
-        print("[경고] 구글 API 인증 정보(JSON)를 찾을 수 없어 드라이브 업로드를 건너뜁니다.")
+        print("[완료] 구글 드라이브 업로드가 성공적으로 완료되었습니다.")
+    except Exception as e:
+        print(f"[오류] 드라이브 업로드 중 문제가 발생했습니다: {e}")
 
     print("[보고] 모든 지시 사항의 처리가 완료되었습니다.")
 
