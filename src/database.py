@@ -150,7 +150,6 @@ class DatabaseManager:
             if not self.conn: return "error:DB 연결이 끊어져 있습니다."
             try:
                 with self.conn.cursor() as cursor:
-                    # [수정 반영] source 출처 조건을 묻지 않고 기본 로직으로 원복
                     sql_check = "SELECT num, is_use, can_use, available FROM ko_word WHERE word = %s"
                     cursor.execute(sql_check, (word,))
                     result = cursor.fetchone()
@@ -364,8 +363,9 @@ class DatabaseManager:
     def export_and_clear_game_history(self, start_dt, end_dt):
         try:
             logs_dir = "logs"
+            # [수정] 디렉토리를 생성하지 않고 예외 메시지를 반환하도록 변경
             if not os.path.exists(logs_dir): 
-                os.makedirs(logs_dir)
+                return False, "logs 디렉토리가 없어 게임 기록 백업 업무를 수행할 수 없습니다."
                 
             start_str = start_dt.strftime("%Y%m%d_%H%M%S") if start_dt else "Unknown"
             end_str = end_dt.strftime("%Y%m%d_%H%M%S") if end_dt else "Unknown"
@@ -391,7 +391,40 @@ class DatabaseManager:
             return True, filename
         except Exception as e:
             print(f"[오류] 히스토리 내보내기 및 비우기 실패: {e}")
-            return False, None
+            return False, str(e)
+
+    def export_all_data_to_csv(self):
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_dir = "backups"
+            # [수정] 디렉토리 생성 제거 및 예외 반환
+            if not os.path.exists(backup_dir): 
+                return False, "backups 디렉토리가 없어 전체 데이터 백업 업무를 수행할 수 없습니다."
+                
+            tables = ["app_logs", "game_history", "game_status"]
+            tables_data = {}
+
+            with self.lock:
+                self._ensure_connection()
+                if not self.conn: return False, None
+                with self.conn.cursor() as cursor:
+                    for table in tables:
+                        try:
+                            cursor.execute(f"SELECT * FROM {table}")
+                            rows = cursor.fetchall()
+                            cols = [i[0] for i in cursor.description] if cursor.description else []
+                            tables_data[table] = (cols, rows)
+                        except Exception: continue
+
+            for table, (cols, rows) in tables_data.items():
+                filename = f"{backup_dir}/{table}_{timestamp}.csv"
+                with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
+                    writer = csv.writer(f)
+                    if cols: writer.writerow(cols)
+                    writer.writerows(rows)
+            return True, timestamp
+        except Exception as e: 
+            return False, str(e)
 
     def reset_all_tables(self):
         with self.lock:

@@ -365,7 +365,6 @@ class GameOverWidget(QWidget):
         self.lbl_countdown.setText(text)
 
 class ChzzkGameGUI(QWidget):
-    # [신규] 비동기 이미지 로드 완료 시그널 (단어, 이미지 바이너리 데이터)
     image_load_finished = pyqtSignal(str, bytes)
 
     def __init__(self):
@@ -385,9 +384,12 @@ class ChzzkGameGUI(QWidget):
         self.profanity_filter = ProfanityFilter()
         
         self.unknown_words_cache = set()
+        # [신규] 부적절한 단어 기록을 위한 셋 캐시 추가
+        self.unavailable_words_cache = set()
+        
         self._load_unknown_words_cache()
+        self._load_unavailable_words_cache()
 
-        # [최적화] QPixmap 전체 캐싱 폐기, 파일명(경로)만 딕셔너리로 저장
         self.word_image_map = {}
         
         self.start_time = None 
@@ -437,39 +439,74 @@ class ChzzkGameGUI(QWidget):
         self.timer.timeout.connect(self.update_runtime)
         self.timer.start(1000)
 
+    # [수정] 파일이 없으면 이메일 알림 전송 예외처리 적용
     def _load_unknown_words_cache(self):
         filepath = resource_path("unknown_words.txt")
-        if os.path.exists(filepath):
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    self.unknown_words_cache = set(f.read().splitlines())
-            except Exception: pass
+        if not os.path.exists(filepath):
+            threading.Thread(target=send_crash_report_email, args=("unknown_words.txt 파일이 없어 미등록 단어 파일 캐싱 업무를 수행할 수 없습니다.",), daemon=True).start()
+            return
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                self.unknown_words_cache = set(f.read().splitlines())
+        except Exception: pass
 
-    # [최적화] 시작 시 파일 이름 텍스트만 캐싱하여 디스크 부하 완벽 차단
+    # [신규] 부적절한 단어 캐싱
+    def _load_unavailable_words_cache(self):
+        filepath = resource_path("unavailable_word.txt")
+        if not os.path.exists(filepath):
+            threading.Thread(target=send_crash_report_email, args=("unavailable_word.txt 파일이 없어 부적절한 단어 캐싱 업무를 수행할 수 없습니다.",), daemon=True).start()
+            return
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                self.unavailable_words_cache = set(f.read().splitlines())
+        except Exception: pass
+
+    # [수정] 매핑 파일 누락 시 알림 발송 예외처리
     def load_word_images(self):
         filepath = resource_path(os.path.join("image", "word_image.txt"))
-        if os.path.exists(filepath):
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line or ';' not in line: continue
-                        word, img_name = line.split(';', 1)
-                        self.word_image_map[word.strip()] = img_name.strip()
-                print(f"[시스템] 단어-이미지 매핑 목록(경로) 로드 완료 (총 {len(self.word_image_map)}개)")
-            except Exception as e:
-                print(f"[오류] 이미지 매핑 파일 로드 실패: {e}")
+        if not os.path.exists(filepath):
+            threading.Thread(target=send_crash_report_email, args=("image/word_image.txt 파일이 없어 이미지 매핑 로드 업무를 수행할 수 없습니다.",), daemon=True).start()
+            return
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or ';' not in line: continue
+                    word, img_name = line.split(';', 1)
+                    self.word_image_map[word.strip()] = img_name.strip()
+            print(f"[시스템] 단어-이미지 매핑 목록(경로) 로드 완료 (총 {len(self.word_image_map)}개)")
+        except Exception as e:
+            print(f"[오류] 이미지 매핑 파일 로드 실패: {e}")
 
+    # [수정] 없는 파일 강제 생성 방지 및 예외 알림 처리
     def safe_log_unknown_word(self, word):
         if word in self.unknown_words_cache:
             return 
         self.unknown_words_cache.add(word)
         filepath = resource_path("unknown_words.txt")
+        if not os.path.exists(filepath):
+            threading.Thread(target=send_crash_report_email, args=("unknown_words.txt 파일이 없어 미등록 단어 기록 업무를 수행할 수 없습니다.",), daemon=True).start()
+            return
         try:
             with open(filepath, 'a', encoding='utf-8') as f:
                 f.write(word + "\n")
         except Exception as e:
             print(f"[오류] 미등록 단어 기록 실패: {e}")
+
+    # [신규] DB에 존재하나 unavailable 한 단어 별도 기록 (요구사항 1)
+    def safe_log_unavailable_word(self, word):
+        if word in self.unavailable_words_cache:
+            return
+        self.unavailable_words_cache.add(word)
+        filepath = resource_path("unavailable_word.txt")
+        if not os.path.exists(filepath):
+            threading.Thread(target=send_crash_report_email, args=("unavailable_word.txt 파일이 없어 부적절한 단어 기록 업무를 수행할 수 없습니다.",), daemon=True).start()
+            return
+        try:
+            with open(filepath, 'a', encoding='utf-8') as f:
+                f.write(word + "\n")
+        except Exception as e:
+            print(f"[오류] 부적절한 단어 기록 실패: {e}")
 
     def start_monitor_service(self):
         loop = asyncio.get_event_loop()
@@ -529,7 +566,10 @@ class ChzzkGameGUI(QWidget):
         shutdown_dlg.set_status("로그 및 데이터 백업 중...")
         end_dt = datetime.now()
         start_dt = getattr(self, 'current_game_start_dt', end_dt)
-        self.db_manager.export_and_clear_game_history(start_dt, end_dt)
+        success, msg = self.db_manager.export_and_clear_game_history(start_dt, end_dt)
+        if not success and msg:
+            threading.Thread(target=send_crash_report_email, args=(msg,), daemon=True).start()
+            
         time.sleep(0.5) 
         
         shutdown_dlg.set_status("데이터베이스 연결 해제 중...")
@@ -706,22 +746,21 @@ class ChzzkGameGUI(QWidget):
         self.log_display.append(formatted_message)
         self.log_display.verticalScrollBar().setValue(self.log_display.verticalScrollBar().maximum())
 
-    # [신규 비동기] 파일 시스템 I/O 전용 스레드 동작 함수
     def _bg_load_image(self, word, img_path):
+        # [수정] 파일 누락 시 알림 추가
+        if not os.path.exists(img_path):
+            threading.Thread(target=send_crash_report_email, args=(f"{img_path} 파일이 없어 연관 이미지 표출 업무를 수행할 수 없습니다.",), daemon=True).start()
+            self.image_load_finished.emit(word, b"")
+            return
+            
         try:
-            if os.path.exists(img_path):
-                with open(img_path, 'rb') as f:
-                    data = f.read()
-                # 메인 GUI 스레드로 파일 바이트 데이터를 안전하게 전달
-                self.image_load_finished.emit(word, data)
-                return
+            with open(img_path, 'rb') as f:
+                data = f.read()
+            self.image_load_finished.emit(word, data)
         except Exception:
-            pass
-        self.image_load_finished.emit(word, b"")
+            self.image_load_finished.emit(word, b"")
 
-    # [신규 비동기] 스레드에서 받아온 바이트 데이터를 메인 화면(UI)에 반영
     def _on_image_loaded(self, word, data):
-        # 엇갈림 방지: 파일을 읽는 도중 이미 새로운 단어가 입력되었다면 표출 무시
         if self.current_word_text != word:
             return
             
@@ -729,7 +768,6 @@ class ChzzkGameGUI(QWidget):
             pixmap = QPixmap()
             pixmap.loadFromData(data)
             if not pixmap.isNull():
-                # 250x250 스케일링을 파일 I/O 직후 1회만 처리
                 pixmap = pixmap.scaled(250, 250, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                 self.lbl_word_image.setPixmap(pixmap)
                 self.lbl_word_image.show()
@@ -742,7 +780,6 @@ class ChzzkGameGUI(QWidget):
         if word in self.word_image_map:
             img_name = self.word_image_map[word]
             img_path = resource_path(os.path.join("image", img_name))
-            # [최적화] 화면 프레임 드랍을 막기 위해 파일 읽기를 서브 스레드로 파견
             threading.Thread(target=self._bg_load_image, args=(word, img_path), daemon=True).start()
         else:
             self.lbl_word_image.clear()
@@ -847,8 +884,6 @@ class ChzzkGameGUI(QWidget):
         self.signals.log_request.connect(self.async_log_system)
         self.signals.gui_log_message.connect(self.log_message)
         self.signals.game_check_result.connect(self.on_word_check_finished)
-        
-        # [신규 비동기] 로드 완료 시그널 슬롯 연결
         self.image_load_finished.connect(self._on_image_loaded)
 
     def handle_stream_offline(self, platform_name):
@@ -1041,9 +1076,11 @@ class ChzzkGameGUI(QWidget):
                 self.log_message(f"{fail_msg} [단어장에 없음]")
                 threading.Thread(target=self.safe_log_unknown_word, args=(word,), daemon=True).start()
             elif result_status == "unavailable":
+                # [수정 반영] 부적절한 단어일 때 로깅 로직 호출 추가
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "부적절")
                 self.log_message(f"{fail_msg} [사용 불가 단어]") 
                 threading.Thread(target=handle_violation_alert, args=(nickname, word), daemon=True).start()
+                threading.Thread(target=self.safe_log_unavailable_word, args=(word,), daemon=True).start()
             elif result_status == "forbidden":
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "금지어")
                 self.log_message(f"{fail_msg} [금지됨]")
@@ -1084,8 +1121,10 @@ class ChzzkGameGUI(QWidget):
 
     def _run_initialization_task(self, start_dt, end_dt):
         self.target_progress = 20
-        self.db_manager.export_and_clear_game_history(start_dt, end_dt)
-        
+        success, msg = self.db_manager.export_and_clear_game_history(start_dt, end_dt)
+        if not success and msg:
+            threading.Thread(target=send_crash_report_email, args=(msg,), daemon=True).start()
+            
         self.target_progress = 99
         self.db_manager.reset_all_tables()
         
