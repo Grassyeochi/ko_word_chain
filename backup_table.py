@@ -27,7 +27,7 @@ def backup_and_zip():
     # 개별 파일명 설정
     sql_filename = f"{BACKUP_TARGET_TABLE}.sql"
     ibd_filename = f"{BACKUP_TARGET_TABLE}.ibd"
-    zip_filename = f"{BACKUP_TARGET_TABLE}{timestamp}.zip"
+    zip_filename = f"{BACKUP_TARGET_TABLE}({timestamp}).zip"
     
     # 절대 경로 설정
     sql_path = os.path.join(BACKUP_TARGET_DIR, sql_filename)
