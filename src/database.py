@@ -1,6 +1,7 @@
 # src/database.py
 import pymysql
 import os
+import sys
 import csv
 import threading
 import queue
@@ -362,8 +363,9 @@ class DatabaseManager:
 
     def export_and_clear_game_history(self, start_dt, end_dt):
         try:
-            logs_dir = "logs"
-            # [수정] 디렉토리를 생성하지 않고 예외 메시지를 반환하도록 변경
+            base_path = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.abspath(".")
+            logs_dir = os.path.join(base_path, "logs")
+            
             if not os.path.exists(logs_dir): 
                 return False, "logs 디렉토리가 없어 게임 기록 백업 업무를 수행할 수 없습니다."
                 
@@ -395,12 +397,13 @@ class DatabaseManager:
 
     def export_all_data_to_csv(self):
         try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_dir = "backups"
-            # [수정] 디렉토리 생성 제거 및 예외 반환
+            base_path = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.abspath(".")
+            backup_dir = os.path.join(base_path, "backups")
+            
             if not os.path.exists(backup_dir): 
                 return False, "backups 디렉토리가 없어 전체 데이터 백업 업무를 수행할 수 없습니다."
                 
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             tables = ["app_logs", "game_history", "game_status"]
             tables_data = {}
 
@@ -417,7 +420,7 @@ class DatabaseManager:
                         except Exception: continue
 
             for table, (cols, rows) in tables_data.items():
-                filename = f"{backup_dir}/{table}_{timestamp}.csv"
+                filename = os.path.join(backup_dir, f"{table}_{timestamp}.csv")
                 with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
                     writer = csv.writer(f)
                     if cols: writer.writerow(cols)

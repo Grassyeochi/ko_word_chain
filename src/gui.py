@@ -24,9 +24,9 @@ from .network import ChzzkMonitor, YouTubeMonitor
 from .utils import apply_dueum_rule, send_alert_email, send_rare_word_email, send_game_start_email, ProfanityFilter, update_env_variable, handle_violation_alert, send_crash_report_email
 
 def resource_path(relative_path):
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
+    if getattr(sys, 'frozen', False):
+        base_path = os.path.dirname(sys.executable)
+    else:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
@@ -384,7 +384,6 @@ class ChzzkGameGUI(QWidget):
         self.profanity_filter = ProfanityFilter()
         
         self.unknown_words_cache = set()
-        # [신규] 부적절한 단어 기록을 위한 셋 캐시 추가
         self.unavailable_words_cache = set()
         
         self._load_unknown_words_cache()
@@ -439,7 +438,6 @@ class ChzzkGameGUI(QWidget):
         self.timer.timeout.connect(self.update_runtime)
         self.timer.start(1000)
 
-    # [수정] 파일이 없으면 이메일 알림 전송 예외처리 적용
     def _load_unknown_words_cache(self):
         filepath = resource_path("unknown_words.txt")
         if not os.path.exists(filepath):
@@ -450,7 +448,6 @@ class ChzzkGameGUI(QWidget):
                 self.unknown_words_cache = set(f.read().splitlines())
         except Exception: pass
 
-    # [신규] 부적절한 단어 캐싱
     def _load_unavailable_words_cache(self):
         filepath = resource_path("unavailable_word.txt")
         if not os.path.exists(filepath):
@@ -461,7 +458,6 @@ class ChzzkGameGUI(QWidget):
                 self.unavailable_words_cache = set(f.read().splitlines())
         except Exception: pass
 
-    # [수정] 매핑 파일 누락 시 알림 발송 예외처리
     def load_word_images(self):
         filepath = resource_path(os.path.join("image", "word_image.txt"))
         if not os.path.exists(filepath):
@@ -478,7 +474,6 @@ class ChzzkGameGUI(QWidget):
         except Exception as e:
             print(f"[오류] 이미지 매핑 파일 로드 실패: {e}")
 
-    # [수정] 없는 파일 강제 생성 방지 및 예외 알림 처리
     def safe_log_unknown_word(self, word):
         if word in self.unknown_words_cache:
             return 
@@ -493,7 +488,6 @@ class ChzzkGameGUI(QWidget):
         except Exception as e:
             print(f"[오류] 미등록 단어 기록 실패: {e}")
 
-    # [신규] DB에 존재하나 unavailable 한 단어 별도 기록 (요구사항 1)
     def safe_log_unavailable_word(self, word):
         if word in self.unavailable_words_cache:
             return
@@ -747,7 +741,6 @@ class ChzzkGameGUI(QWidget):
         self.log_display.verticalScrollBar().setValue(self.log_display.verticalScrollBar().maximum())
 
     def _bg_load_image(self, word, img_path):
-        # [수정] 파일 누락 시 알림 추가
         if not os.path.exists(img_path):
             threading.Thread(target=send_crash_report_email, args=(f"{img_path} 파일이 없어 연관 이미지 표출 업무를 수행할 수 없습니다.",), daemon=True).start()
             self.image_load_finished.emit(word, b"")
@@ -1076,7 +1069,6 @@ class ChzzkGameGUI(QWidget):
                 self.log_message(f"{fail_msg} [단어장에 없음]")
                 threading.Thread(target=self.safe_log_unknown_word, args=(word,), daemon=True).start()
             elif result_status == "unavailable":
-                # [수정 반영] 부적절한 단어일 때 로깅 로직 호출 추가
                 self.async_log_history(nickname, word, self.current_word_text, "Fail", "부적절")
                 self.log_message(f"{fail_msg} [사용 불가 단어]") 
                 threading.Thread(target=handle_violation_alert, args=(nickname, word), daemon=True).start()
