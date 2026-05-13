@@ -150,13 +150,13 @@ class DatabaseManager:
             if not self.conn: return "error:DB 연결이 끊어져 있습니다."
             try:
                 with self.conn.cursor() as cursor:
-                    # [수정 반영] 이미지 처리를 위해 source 값도 함께 가져오도록 쿼리 수정
-                    sql_check = "SELECT num, is_use, can_use, available, source FROM ko_word WHERE word = %s"
+                    # [수정 반영] source 출처 조건을 묻지 않고 기본 로직으로 원복
+                    sql_check = "SELECT num, is_use, can_use, available FROM ko_word WHERE word = %s"
                     cursor.execute(sql_check, (word,))
                     result = cursor.fetchone()
 
                     if not result: return "not_found"
-                    pk_num, is_use, can_use, available, source = result
+                    pk_num, is_use, can_use, available = result
 
                     if not available: return "unavailable"
                     if not can_use: return "forbidden"
@@ -165,8 +165,7 @@ class DatabaseManager:
                     sql_update = "UPDATE ko_word SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s WHERE num = %s AND is_use = FALSE"
                     affected = cursor.execute(sql_update, (nickname, pk_num))
                     
-                    # [수정 반영] 성공 시 source 값을 콜론(:)으로 묶어 함께 반환
-                    return f"success:{source}" if affected > 0 else "used"
+                    return "success" if affected > 0 else "used"
             except Exception as e:
                 err_str = str(e).replace('\n', ' ')
                 return f"error:{err_str}"

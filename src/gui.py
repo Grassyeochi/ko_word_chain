@@ -365,6 +365,9 @@ class GameOverWidget(QWidget):
         self.lbl_countdown.setText(text)
 
 class ChzzkGameGUI(QWidget):
+    # [신규] 비동기 이미지 로드 완료 시그널 (단어, 이미지 바이너리 데이터)
+    image_load_finished = pyqtSignal(str, bytes)
+
     def __init__(self):
         super().__init__()
         
@@ -384,6 +387,7 @@ class ChzzkGameGUI(QWidget):
         self.unknown_words_cache = set()
         self._load_unknown_words_cache()
 
+        # [최적화] QPixmap 전체 캐싱 폐기, 파일명(경로)만 딕셔너리로 저장
         self.word_image_map = {}
         
         self.start_time = None 
@@ -441,6 +445,7 @@ class ChzzkGameGUI(QWidget):
                     self.unknown_words_cache = set(f.read().splitlines())
             except Exception: pass
 
+    # [최적화] 시작 시 파일 이름 텍스트만 캐싱하여 디스크 부하 완벽 차단
     def load_word_images(self):
         filepath = resource_path(os.path.join("image", "word_image.txt"))
         if os.path.exists(filepath):
@@ -450,11 +455,8 @@ class ChzzkGameGUI(QWidget):
                         line = line.strip()
                         if not line or ';' not in line: continue
                         word, img_name = line.split(';', 1)
-                        word = word.strip()
-                        img_path = resource_path(os.path.join("image", img_name.strip()))
-                        if os.path.exists(img_path):
-                            self.word_image_map[word] = QPixmap(img_path)
-                print(f"[시스템] 이미지 매핑 캐싱을 완료했습니다. (총 {len(self.word_image_map)}개)")
+                        self.word_image_map[word.strip()] = img_name.strip()
+                print(f"[시스템] 단어-이미지 매핑 목록(경로) 로드 완료 (총 {len(self.word_image_map)}개)")
             except Exception as e:
                 print(f"[오류] 이미지 매핑 파일 로드 실패: {e}")
 
@@ -704,10 +706,44 @@ class ChzzkGameGUI(QWidget):
         self.log_display.append(formatted_message)
         self.log_display.verticalScrollBar().setValue(self.log_display.verticalScrollBar().maximum())
 
+    # [신규 비동기] 파일 시스템 I/O 전용 스레드 동작 함수
+    def _bg_load_image(self, word, img_path):
+        try:
+            if os.path.exists(img_path):
+                with open(img_path, 'rb') as f:
+                    data = f.read()
+                # 메인 GUI 스레드로 파일 바이트 데이터를 안전하게 전달
+                self.image_load_finished.emit(word, data)
+                return
+        except Exception:
+            pass
+        self.image_load_finished.emit(word, b"")
+
+    # [신규 비동기] 스레드에서 받아온 바이트 데이터를 메인 화면(UI)에 반영
+    def _on_image_loaded(self, word, data):
+        # 엇갈림 방지: 파일을 읽는 도중 이미 새로운 단어가 입력되었다면 표출 무시
+        if self.current_word_text != word:
+            return
+            
+        if data:
+            pixmap = QPixmap()
+            pixmap.loadFromData(data)
+            if not pixmap.isNull():
+                # 250x250 스케일링을 파일 I/O 직후 1회만 처리
+                pixmap = pixmap.scaled(250, 250, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                self.lbl_word_image.setPixmap(pixmap)
+                self.lbl_word_image.show()
+                return
+                
+        self.lbl_word_image.clear()
+        self.lbl_word_image.hide()
+
     def display_word_image(self, word):
         if word in self.word_image_map:
-            self.lbl_word_image.setPixmap(self.word_image_map[word])
-            self.lbl_word_image.show()
+            img_name = self.word_image_map[word]
+            img_path = resource_path(os.path.join("image", img_name))
+            # [최적화] 화면 프레임 드랍을 막기 위해 파일 읽기를 서브 스레드로 파견
+            threading.Thread(target=self._bg_load_image, args=(word, img_path), daemon=True).start()
         else:
             self.lbl_word_image.clear()
             self.lbl_word_image.hide()
@@ -811,6 +847,9 @@ class ChzzkGameGUI(QWidget):
         self.signals.log_request.connect(self.async_log_system)
         self.signals.gui_log_message.connect(self.log_message)
         self.signals.game_check_result.connect(self.on_word_check_finished)
+        
+        # [신규 비동기] 로드 완료 시그널 슬롯 연결
+        self.image_load_finished.connect(self._on_image_loaded)
 
     def handle_stream_offline(self, platform_name):
         if platform_name in self.platform_status:
@@ -946,7 +985,7 @@ class ChzzkGameGUI(QWidget):
             result = self.db_manager.check_and_use_word(word, nickname)
             is_game_over = False
 
-            if result.startswith("success"):
+            if result == "success":
                 next_starts = apply_dueum_rule(word[-1])
                 any_left = False
                 for char in next_starts:
@@ -963,13 +1002,6 @@ class ChzzkGameGUI(QWidget):
             self.signals.game_check_result.emit(f"error:{err_str}", platform, nickname, word, False)
 
     def on_word_check_finished(self, result_status, platform, nickname, word, is_game_over):
-        source = ""
-        if result_status.startswith("success"):
-            parts = result_status.split(":", 1)
-            result_status = parts[0]
-            if len(parts) > 1:
-                source = parts[1]
-
         if result_status == "success":
             QTimer.singleShot(1000, self.unlock_input)
             
@@ -986,13 +1018,7 @@ class ChzzkGameGUI(QWidget):
 
             self.current_word_text = word
             self.set_responsive_text(word)
-            
-            # [수정 반영] 시청자 입력 정답 시, source가 admin_spec 일 때만 이미지 표출
-            if source == "admin_spec":
-                self.display_word_image(word)
-            else:
-                self.lbl_word_image.clear()
-                self.lbl_word_image.hide()
+            self.display_word_image(word)
             
             self.last_change_time = time.time()
             update_env_variable("last_word_change_time", datetime.fromtimestamp(self.last_change_time).strftime("%Y.%m.%d %H:%M:%S"))
