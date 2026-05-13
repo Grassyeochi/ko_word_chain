@@ -494,7 +494,7 @@ class ChzzkGameGUI(QWidget):
         self.unavailable_words_cache.add(word)
         filepath = resource_path("unavailable_word.txt")
         if not os.path.exists(filepath):
-            threading.Thread(target=send_crash_report_email, args=("unavailable_word.txt 파일이 없어 부적절한 단어 기록 업무를 수행할 수 없습니다.",), daemon=True).start()
+            threading.Thread(target=send_crash_report_email, args=("unavailable_word.txt 파일이 없어 부적절 단어 기록 업무를 수행할 수 없습니다.",), daemon=True).start()
             return
         try:
             with open(filepath, 'a', encoding='utf-8') as f:
@@ -687,7 +687,15 @@ class ChzzkGameGUI(QWidget):
         lbl_cw_title.setStyleSheet("color: #AAA;")
         game_area.addWidget(lbl_cw_title)
         
-        word_image_layout = QHBoxLayout()
+        # [수정] 견본 사진의 '이스터에그' 위치와 동일하게 공간 배치
+        word_container = QHBoxLayout()
+        
+        # 중앙 정렬을 완벽하게 맞추기 위한 왼쪽 투명 더미
+        left_spacer = QVBoxLayout()
+        left_dummy = QLabel()
+        left_dummy.setFixedSize(110, 110)
+        left_spacer.addWidget(left_dummy)
+        left_spacer.addStretch(1)
         
         self.lbl_current_word = QLabel("...")
         self.lbl_current_word.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
@@ -696,15 +704,20 @@ class ChzzkGameGUI(QWidget):
         self.lbl_current_word.setStyleSheet("color: white;")
         self.lbl_current_word.setWordWrap(True)
         
+        # 우측 상단 이스터에그 배치 (100x100 이미지 + 양옆 5px 패딩 = 110x110 프레임)
+        right_spacer = QVBoxLayout()
         self.lbl_word_image = QLabel()
+        self.lbl_word_image.setFixedSize(110, 110)
         self.lbl_word_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_word_image.setStyleSheet("background-color: white; padding: 5px; border-radius: 8px;")
-        self.lbl_word_image.hide()
+        self.lbl_word_image.setStyleSheet("background-color: transparent;")
+        right_spacer.addWidget(self.lbl_word_image)
+        right_spacer.addStretch(1)
         
-        word_image_layout.addWidget(self.lbl_current_word, stretch=7)
-        word_image_layout.addWidget(self.lbl_word_image, stretch=3)
+        word_container.addLayout(left_spacer)
+        word_container.addWidget(self.lbl_current_word, stretch=1)
+        word_container.addLayout(right_spacer)
         
-        game_area.addLayout(word_image_layout, stretch=3)
+        game_area.addLayout(word_container, stretch=3)
         
         self.lbl_pause_status = QLabel("⛔ 정답 입력 중지됨 ⛔")
         self.lbl_pause_status.setFont(QFont("NanumBarunGothic", 30, QFont.Weight.Bold))
@@ -761,13 +774,15 @@ class ChzzkGameGUI(QWidget):
             pixmap = QPixmap()
             pixmap.loadFromData(data)
             if not pixmap.isNull():
-                pixmap = pixmap.scaled(250, 250, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                # [수정] 이미지를 지시된 100x100 해상도로 정확히 스케일링
+                pixmap = pixmap.scaled(100, 100, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                 self.lbl_word_image.setPixmap(pixmap)
-                self.lbl_word_image.show()
+                # [수정] 5px의 흰색 패딩 스타일 적용
+                self.lbl_word_image.setStyleSheet("background-color: white; padding: 5px;")
                 return
                 
         self.lbl_word_image.clear()
-        self.lbl_word_image.hide()
+        self.lbl_word_image.setStyleSheet("background-color: transparent;")
 
     def display_word_image(self, word):
         if word in self.word_image_map:
@@ -776,7 +791,7 @@ class ChzzkGameGUI(QWidget):
             threading.Thread(target=self._bg_load_image, args=(word, img_path), daemon=True).start()
         else:
             self.lbl_word_image.clear()
-            self.lbl_word_image.hide()
+            self.lbl_word_image.setStyleSheet("background-color: transparent;")
 
     def set_responsive_text(self, text):
         if not text: return
@@ -892,7 +907,8 @@ class ChzzkGameGUI(QWidget):
                 font = self.lbl_current_word.font()
                 font.setPointSize(50)
                 self.lbl_current_word.setFont(font)
-                self.lbl_word_image.hide() 
+                self.lbl_word_image.clear()
+                self.lbl_word_image.setStyleSheet("background-color: transparent;")
                 self.log_message("[시스템] 모든 방송 연결이 끊겼습니다. 재접속 대기 중...")
         else:
             now = time.time()
