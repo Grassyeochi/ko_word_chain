@@ -366,6 +366,8 @@ class GameOverWidget(QWidget):
 
 class ChzzkGameGUI(QWidget):
     image_load_finished = pyqtSignal(str, bytes)
+    # [신규] 백그라운드 재접속 확인 결과를 수신하는 전용 시그널
+    reconnect_check_result = pyqtSignal(str, bool, int)
 
     def __init__(self):
         super().__init__()
@@ -390,6 +392,12 @@ class ChzzkGameGUI(QWidget):
         self._load_unavailable_words_cache()
 
         self.word_image_map = {}
+        
+        # [신규] 플랫폼별 재접속 백오프 관리를 위한 변수
+        self.reconnect_state = {
+            '치지직': {'interval': 5, 'delta': 5, 'active': False},
+            '유튜브': {'interval': 5, 'delta': 5, 'active': False}
+        }
         
         self.start_time = None 
         self.program_start_dt = datetime.now() 
@@ -427,7 +435,6 @@ class ChzzkGameGUI(QWidget):
         self.target_progress = 0
 
         self.reset_thread = None
-        self.last_offline_log_time = {} 
 
         self.init_ui()
         self.load_word_images() 
@@ -574,6 +581,14 @@ class ChzzkGameGUI(QWidget):
         time.sleep(0.3)
         event.accept()
 
+    # [신규] 모든 플랫폼 연결 실패 시 메일 전송 후 종료를 트리거하는 기능
+    def _trigger_abnormal_shutdown(self):
+        msg = "모든 송출 플랫폼(치지직, 유튜브)의 연결이 끊어지고, 110초 대기 재접속 시도에도 최종 실패하여 프로그램을 비정상 종료합니다."
+        threading.Thread(target=send_crash_report_email, args=(msg,), daemon=True).start()
+        self.log_message(f"[치명적 오류] {msg}")
+        # 이메일 전송 스레드가 작동할 수 있도록 3초 대기 후 안전하게 closeEvent 호출
+        QTimer.singleShot(3000, self.close)
+
     def init_ui(self):
         self.setWindowTitle("치지직/유튜브 한국어 끝말잇기")
         self.setFixedSize(1200, 700)
@@ -687,10 +702,8 @@ class ChzzkGameGUI(QWidget):
         lbl_cw_title.setStyleSheet("color: #AAA;")
         game_area.addWidget(lbl_cw_title)
         
-        # [수정] 견본 사진의 '이스터에그' 위치와 동일하게 공간 배치
         word_container = QHBoxLayout()
         
-        # 중앙 정렬을 완벽하게 맞추기 위한 왼쪽 투명 더미
         left_spacer = QVBoxLayout()
         left_dummy = QLabel()
         left_dummy.setFixedSize(110, 110)
@@ -704,7 +717,6 @@ class ChzzkGameGUI(QWidget):
         self.lbl_current_word.setStyleSheet("color: white;")
         self.lbl_current_word.setWordWrap(True)
         
-        # 우측 상단 이스터에그 배치 (100x100 이미지 + 양옆 5px 패딩 = 110x110 프레임)
         right_spacer = QVBoxLayout()
         self.lbl_word_image = QLabel()
         self.lbl_word_image.setFixedSize(110, 110)
@@ -774,10 +786,8 @@ class ChzzkGameGUI(QWidget):
             pixmap = QPixmap()
             pixmap.loadFromData(data)
             if not pixmap.isNull():
-                # [수정] 이미지를 지시된 100x100 해상도로 정확히 스케일링
                 pixmap = pixmap.scaled(100, 100, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                 self.lbl_word_image.setPixmap(pixmap)
-                # [수정] 5px의 흰색 패딩 스타일 적용
                 self.lbl_word_image.setStyleSheet("background-color: white; padding: 5px;")
                 return
                 
@@ -893,7 +903,9 @@ class ChzzkGameGUI(QWidget):
         self.signals.gui_log_message.connect(self.log_message)
         self.signals.game_check_result.connect(self.on_word_check_finished)
         self.image_load_finished.connect(self._on_image_loaded)
+        self.reconnect_check_result.connect(self._on_reconnect_result)
 
+    # [신규] 재접속 타이머 시작 트리거
     def handle_stream_offline(self, platform_name):
         if platform_name in self.platform_status:
             self.platform_status[platform_name] = False
@@ -910,12 +922,77 @@ class ChzzkGameGUI(QWidget):
                 self.lbl_word_image.clear()
                 self.lbl_word_image.setStyleSheet("background-color: transparent;")
                 self.log_message("[시스템] 모든 방송 연결이 끊겼습니다. 재접속 대기 중...")
+        
+        # [신규] 해당 플랫폼의 재접속 백오프 타이머 가동 (최초 5초)
+        if platform_name in self.reconnect_state and not self.reconnect_state[platform_name]['active']:
+            self.reconnect_state[platform_name]['active'] = True
+            self.reconnect_state[platform_name]['interval'] = 5
+            self.reconnect_state[platform_name]['delta'] = 5
+            self.log_message(f"[시스템] {platform_name} 연결 유실 확인. 5초 후 재접속을 시도합니다.")
+            QTimer.singleShot(5000, lambda p=platform_name: self.attempt_reconnect(p))
+
+    # [신규] 백그라운드 재접속 확인 스레드 파견
+    def attempt_reconnect(self, platform_name):
+        if platform_name not in self.reconnect_state or not self.reconnect_state[platform_name]['active']:
+            return
+        current_interval = self.reconnect_state[platform_name]['interval']
+        threading.Thread(target=self._bg_check_reconnect, args=(platform_name, current_interval), daemon=True).start()
+
+    # [신규] 백그라운드에서 실제 서버 연결 상태 핑(Ping) 체크
+    def _bg_check_reconnect(self, platform_name, current_interval):
+        is_ok = False
+        if platform_name == '치지직':
+            is_ok, msg = self.chzzk_monitor.check_live_status_sync()
+        elif platform_name == '유튜브':
+            is_ok, msg = self.youtube_monitor.check_live_status_sync()
+            
+        self.reconnect_check_result.emit(platform_name, is_ok, current_interval)
+
+    # [신규] 스레드 통신을 받아 재접속 처리 혹은 다음 백오프 계산 진행
+    def _on_reconnect_result(self, platform_name, is_ok, current_interval):
+        if platform_name not in self.reconnect_state or not self.reconnect_state[platform_name]['active']:
+            return
+            
+        if is_ok:
+            self.log_message(f"[시스템] {platform_name} 재접속 성공!")
+            self.reconnect_state[platform_name]['active'] = False
+            
+            # 끊겼던 비동기 태스크(루프) 재가동
+            loop = asyncio.get_event_loop()
+            if platform_name == '치지직':
+                loop.create_task(self.chzzk_monitor.run())
+            elif platform_name == '유튜브':
+                loop.create_task(self.youtube_monitor.run())
+                
+            self.handle_stream_connected(platform_name)
         else:
-            now = time.time()
-            last_log = self.last_offline_log_time.get(platform_name, 0)
-            if now - last_log > 30:
-                self.log_message(f"[시스템] {platform_name} 연결 불안정. 재접속 시도 중...")
-                self.last_offline_log_time[platform_name] = now
+            # 모든 플랫폼이 오프라인인지 판별
+            both_offline = True
+            if self.use_chzzk and self.platform_status.get('치지직', False):
+                both_offline = False
+            if self.use_youtube and self.platform_status.get('유튜브', False):
+                both_offline = False
+                
+            # 만약 110초 대기 시도였고, 지금 모두 오프라인이라면 비정상 종료 (요구사항)
+            if current_interval >= 110 and both_offline:
+                self.reconnect_state[platform_name]['active'] = False
+                self._trigger_abnormal_shutdown()
+                return
+                
+            # 다음 대기 시간(interval) 및 증가치(delta) 계산
+            delta = self.reconnect_state[platform_name]['delta']
+            next_interval = current_interval + delta
+            next_delta = delta + 5
+            
+            # 최대 한계치인 110초에 도달하면 시간 고정
+            if next_interval >= 110:
+                next_interval = 110
+                
+            self.reconnect_state[platform_name]['interval'] = next_interval
+            self.reconnect_state[platform_name]['delta'] = next_delta
+            
+            self.log_message(f"[시스템] {platform_name} 재접속 실패. {next_interval}초 후 다시 시도합니다...")
+            QTimer.singleShot(next_interval * 1000, lambda p=platform_name: self.attempt_reconnect(p))
 
     def handle_stream_connected(self, platform_name):
         was_connected = self.platform_status.get(platform_name, False)
