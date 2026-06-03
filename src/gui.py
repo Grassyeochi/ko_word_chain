@@ -88,18 +88,22 @@ class StartupCheckDialog(QDialog):
         
         self.lbl_chzzk = QLabel("치지직 확인 중...")
         self.lbl_chzzk.setFont(QFont("NanumBarunGothic", 12))
+        self.lbl_chzzk.setWordWrap(True)
         layout.addWidget(self.lbl_chzzk)
 
         self.lbl_yt = QLabel("유튜브 확인 중...")
         self.lbl_yt.setFont(QFont("NanumBarunGothic", 12))
+        self.lbl_yt.setWordWrap(True)
         layout.addWidget(self.lbl_yt)
         
         self.lbl_db = QLabel("DB 연결 확인 중...")
         self.lbl_db.setFont(QFont("NanumBarunGothic", 12))
+        self.lbl_db.setWordWrap(True)
         layout.addWidget(self.lbl_db)
 
         self.lbl_env = QLabel("환경변수(날짜) 확인 중...")
         self.lbl_env.setFont(QFont("NanumBarunGothic", 12))
+        self.lbl_env.setWordWrap(True)
         layout.addWidget(self.lbl_env)
         
         self.progress = QProgressBar()
@@ -625,7 +629,6 @@ class ChzzkGameGUI(QWidget):
         self.log_display = QTextEdit()
         self.log_display.setReadOnly(True)
         self.log_display.document().setMaximumBlockCount(500) 
-        # [수정 반영] 로그 창 배경색을 흰색으로 변경하고 기본 텍스트 색상을 회색(#555555)으로 고정
         self.log_display.setStyleSheet("""
             border: 2px solid white; 
             color: #555555; 
@@ -757,7 +760,6 @@ class ChzzkGameGUI(QWidget):
             self.console_window = ConsoleWindow(self)
         self.console_window.show()
 
-    # [수정 반영] HTML 파싱을 통한 조건부 색상 하이라이팅 적용
     def log_message(self, message):
         current_time_str = datetime.now().strftime("[%H:%M:%S]")
         default_color = "#555555"
