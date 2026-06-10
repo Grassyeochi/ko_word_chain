@@ -17,7 +17,6 @@ class DatabaseManager:
         
         self.current_game_id = None
         self.conn = None
-        
         self.lock = threading.Lock() 
         self.banned_chars = {}
         
@@ -34,15 +33,9 @@ class DatabaseManager:
                 except: pass
             
             self.conn = pymysql.connect(
-                host=self.host,
-                user=self.user,
-                password=self.password,
-                db=self.db_name,
-                port=self.port,
-                charset='utf8mb4',
-                autocommit=True,
-                cursorclass=pymysql.cursors.Cursor,
-                connect_timeout=10 
+                host=self.host, user=self.user, password=self.password,
+                db=self.db_name, port=self.port, charset='utf8mb4',
+                autocommit=True, cursorclass=pymysql.cursors.Cursor, connect_timeout=10 
             )
             print(f"[시스템] DB 연결 성공 (Database: {self.db_name})")
         except Exception as e:
@@ -79,13 +72,11 @@ class DatabaseManager:
                 worker_conn.ping(reconnect=True)
                 with worker_conn.cursor() as cursor:
                     if task['type'] == 'system':
-                        sql = "INSERT INTO app_logs (log_level, source_class, message, stack_trace) VALUES (%s, %s, %s, %s)"
-                        cursor.execute(sql, task['data'])
+                        cursor.execute("INSERT INTO app_logs (log_level, source_class, message, stack_trace) VALUES (%s, %s, %s, %s)", task['data'])
                     elif task['type'] == 'history':
-                        sql = "INSERT INTO game_history (nickname, input_word, previous_word, result_status, fail_reason) VALUES (%s, %s, %s, %s, %s)"
-                        cursor.execute(sql, task['data'])
+                        cursor.execute("INSERT INTO game_history (nickname, input_word, previous_word, result_status, fail_reason) VALUES (%s, %s, %s, %s, %s)", task['data'])
             except Exception as e:
-                print(f"[DB 로그 저장 실패] {e}")
+                pass 
             finally:
                 self.log_queue.task_done()
 
@@ -102,11 +93,9 @@ class DatabaseManager:
             try:
                 table_name = "app_logs" if log_type == "all" else "game_history"
                 with self.conn.cursor() as cursor:
-                    sql = f"SELECT * FROM {table_name} ORDER BY 1 DESC LIMIT %s"
-                    cursor.execute(sql, (limit,))
+                    cursor.execute(f"SELECT * FROM {table_name} ORDER BY 1 DESC LIMIT %s", (limit,))
                     return cursor.fetchall()
-            except Exception as e:
-                raise e
+            except Exception as e: raise e
 
     def start_new_game_session(self, start_word):
         with self.lock:
@@ -114,11 +103,9 @@ class DatabaseManager:
             if not self.conn: return
             try:
                 with self.conn.cursor() as cursor:
-                    sql = "INSERT INTO game_status(start_word) VALUES (%s)"
-                    cursor.execute(sql, (start_word,))
+                    cursor.execute("INSERT INTO game_status(start_word) VALUES (%s)", (start_word,))
                     self.current_game_id = cursor.lastrowid
-            except Exception as e:
-                print(f"[오류] 게임 시작 실패: {e}")
+            except Exception as e: print(f"[오류] 게임 시작 실패: {e}")
 
     def end_game_session(self, fail_count, end_word, end_platform, end_user):
         if self.current_game_id is None: return
@@ -129,46 +116,32 @@ class DatabaseManager:
                 with self.conn.cursor() as cursor:
                     cursor.execute("SELECT COUNT(*) FROM ko_word WHERE is_use = TRUE")
                     success_count = cursor.fetchone()[0]
-
-                    sql = """
-                        UPDATE game_status 
-                        SET word_currect_count = %s, word_fail_count = %s, end_at = NOW(),
-                            end_word = %s, end_platform = %s, end_user = %s
-                        WHERE num = %s
-                    """
+                    sql = """UPDATE game_status SET word_currect_count = %s, word_fail_count = %s, end_at = NOW(),
+                             end_word = %s, end_platform = %s, end_user = %s WHERE num = %s"""
                     cursor.execute(sql, (success_count, fail_count, end_word, end_platform, end_user, self.current_game_id))
                 self.current_game_id = None
-            except Exception as e:
-                print(f"[오류] 게임 종료 기록 실패: {e}")
+            except Exception as e: print(f"[오류] 게임 종료 기록 실패: {e}")
 
     def check_and_use_word(self, word, nickname):
         word = word.strip()
-        if word[-1] in self.banned_chars:
-            return "forbidden_end_char" 
+        if word[-1] in self.banned_chars: return "forbidden_end_char" 
 
         with self.lock:
             self._ensure_connection()
-            if not self.conn: return "error:DB 연결이 끊어져 있습니다."
+            if not self.conn: return "error:DB 연결 끊김"
             try:
                 with self.conn.cursor() as cursor:
-                    sql_check = "SELECT num, is_use, can_use, available FROM ko_word WHERE word = %s"
-                    cursor.execute(sql_check, (word,))
+                    cursor.execute("SELECT num, is_use, can_use, available FROM ko_word WHERE word = %s", (word,))
                     result = cursor.fetchone()
-
                     if not result: return "not_found"
                     pk_num, is_use, can_use, available = result
-
                     if not available: return "unavailable"
                     if not can_use: return "forbidden"
                     if is_use: return "used"
 
-                    sql_update = "UPDATE ko_word SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s WHERE num = %s AND is_use = FALSE"
-                    affected = cursor.execute(sql_update, (nickname, pk_num))
-                    
+                    affected = cursor.execute("UPDATE ko_word SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s WHERE num = %s AND is_use = FALSE", (nickname, pk_num))
                     return "success" if affected > 0 else "used"
-            except Exception as e:
-                err_str = str(e).replace('\n', ' ')
-                return f"error:{err_str}"
+            except Exception as e: return f"error:{str(e).replace(chr(10), ' ')}"
 
     def check_remaining_words(self, start_char):
         current_banned = list(self.banned_chars.keys())
@@ -177,48 +150,25 @@ class DatabaseManager:
             if not self.conn: return 0
             try:
                 with self.conn.cursor() as cursor:
-                    source_condition = "AND source IN ('URI', 'Standard', 'naver_wiki', 'admin', 'subway', 'wikipedia')"
-                    
+                    source_cond = "AND source IN ('URI', 'Standard', 'naver_wiki', 'admin', 'subway', 'wikipedia')"
                     if current_banned:
                         placeholders = ','.join(['%s'] * len(current_banned))
-                        sql = f"""
-                            SELECT count(*) FROM ko_word 
-                            WHERE word LIKE %s 
-                            AND is_use = FALSE 
-                            AND can_use = TRUE 
-                            AND available = TRUE 
-                            {source_condition}
-                            AND end_char NOT IN ({placeholders})
-                        """
+                        sql = f"SELECT count(*) FROM ko_word WHERE word LIKE %s AND is_use = FALSE AND can_use = TRUE AND available = TRUE {source_cond} AND end_char NOT IN ({placeholders})"
                         params = [start_char + "%"] + current_banned
                         cursor.execute(sql, tuple(params))
                     else:
-                        sql = f"""
-                            SELECT count(*) FROM ko_word 
-                            WHERE word LIKE %s 
-                            AND is_use = FALSE 
-                            AND can_use = TRUE 
-                            AND available = TRUE
-                            {source_condition}
-                        """
+                        sql = f"SELECT count(*) FROM ko_word WHERE word LIKE %s AND is_use = FALSE AND can_use = TRUE AND available = TRUE {source_cond}"
                         cursor.execute(sql, (start_char + "%",))
-                    
                     return cursor.fetchone()[0] 
-            except Exception as e:
-                print(f"[오류] 남은 단어 확인 에러: {e}")
-                return 0
+            except Exception: return 0
 
     def check_and_ban_start_char(self, last_word):
         if not last_word: return
         target_char = last_word[-1] 
-        
         now = datetime.now()
-        expired_chars = []
-        for char, banned_at in self.banned_chars.items():
-            if (now - banned_at).total_seconds() >= 24 * 3600:
-                expired_chars.append(char)
-        for char in expired_chars:
-            del self.banned_chars[char]
+        
+        expired_chars = [char for char, banned_at in self.banned_chars.items() if (now - banned_at).total_seconds() >= 24 * 3600]
+        for char in expired_chars: del self.banned_chars[char]
 
         with self.lock:
             self._ensure_connection()
@@ -233,45 +183,26 @@ class DatabaseManager:
                     like_clauses = " OR ".join(["word LIKE %s"] * len(valid_starts))
                     like_params = [c + "%" for c in valid_starts]
                     
-                    sql = f"""
-                        SELECT word, end_char 
-                        FROM ko_word 
-                        WHERE ({like_clauses}) 
-                        AND available = TRUE 
-                        AND can_use = TRUE
-                        AND is_use = FALSE
-                        AND source IN ('URI', 'Standard', 'naver_wiki', 'admin', 'subway', 'wikipedia')
-                    """
+                    sql = f"SELECT word, end_char FROM ko_word WHERE ({like_clauses}) AND available = TRUE AND can_use = TRUE AND is_use = FALSE AND source IN ('URI', 'Standard', 'naver_wiki', 'admin', 'subway', 'wikipedia')"
                     cursor.execute(sql, tuple(like_params))
-                    candidate_words = cursor.fetchall()
-
-                    non_one_hit_count = 0
-                    for word, ec in candidate_words:
-                        possible_next_chars = apply_dueum_rule(ec)
-                        if any(nc in valid_starts_in_db for nc in possible_next_chars):
-                            non_one_hit_count += 1
+                    
+                    non_one_hit_count = sum(1 for _, ec in cursor.fetchall() if any(nc in valid_starts_in_db for nc in apply_dueum_rule(ec)))
 
                     if non_one_hit_count <= 5:
-                        if target_char in self.banned_chars:
-                            if self.banned_chars[target_char] < now:
-                                self.banned_chars[target_char] = now
-                        else:
+                        if target_char not in self.banned_chars or self.banned_chars[target_char] < now:
                             self.banned_chars[target_char] = now
-                        
-                        print(f"[시스템] 규칙 발동: '{target_char}'(으)로 끝나는 단어 금지 목록에 추가됨 (신뢰 출처 생존 가능 단어: {non_one_hit_count}개).")
-            except Exception as e:
-                print(f"[오류] 금지 글자 판별 실패: {e}")
+                        print(f"[시스템] 규칙 발동: '{target_char}' 끝단어 금지 추가됨 (생존: {non_one_hit_count}개).")
+            except Exception: pass
 
     def toggle_banned_char(self, char):
         if char in self.banned_chars:
             del self.banned_chars[char]
-            return f"[성공] '{char}' 글자가 금지 목록에서 해제되었습니다."
+            return f"[성공] '{char}' 금지 해제."
         else:
             self.banned_chars[char] = datetime(2099, 12, 31)
-            return f"[성공] '{char}' 글자가 영구 금지 목록에 추가되었습니다."
+            return f"[성공] '{char}' 영구 금지."
 
-    def get_banned_end_chars(self):
-        return list(self.banned_chars.keys())
+    def get_banned_end_chars(self): return list(self.banned_chars.keys())
 
     def check_rare_end_word(self, end_char):
         with self.lock:
@@ -279,8 +210,7 @@ class DatabaseManager:
             if not self.conn: return -1
             try:
                 with self.conn.cursor() as cursor:
-                    sql = "SELECT count(*) FROM ko_word WHERE end_char = %s AND source NOT IN ('movie', 'medicine', 'company', 'food')"
-                    cursor.execute(sql, (end_char,))
+                    cursor.execute("SELECT count(*) FROM ko_word WHERE end_char = %s AND source NOT IN ('movie', 'medicine', 'company', 'food')", (end_char,))
                     return cursor.fetchone()[0]
             except Exception: return -1
 
@@ -295,15 +225,12 @@ class DatabaseManager:
             except Exception: return 0
 
     def mark_word_as_forbidden(self, word):
-        word = word.strip()
         with self.lock:
             self._ensure_connection()
             if not self.conn: return False
             try:
                 with self.conn.cursor() as cursor:
-                    sql = "UPDATE ko_word SET can_use = FALSE WHERE word = %s"
-                    affected = cursor.execute(sql, (word,))
-                    return affected > 0
+                    return cursor.execute("UPDATE ko_word SET can_use = FALSE WHERE word = %s", (word.strip(),)) > 0
             except Exception: return False
 
     def admin_force_use_word(self, word, nickname="console-admin"):
@@ -312,18 +239,13 @@ class DatabaseManager:
             if not self.conn: return False
             try:
                 with self.conn.cursor() as cursor:
-                    sql_check = "SELECT num FROM ko_word WHERE word = %s"
-                    cursor.execute(sql_check, (word,))
+                    cursor.execute("SELECT num FROM ko_word WHERE word = %s", (word,))
                     result = cursor.fetchone()
-
                     if result:
-                        pk_num = result[0]
-                        sql_update = "UPDATE ko_word SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s WHERE num = %s"
-                        cursor.execute(sql_update, (nickname, pk_num))
+                        cursor.execute("UPDATE ko_word SET is_use = TRUE, is_use_date = NOW(), is_use_user = %s WHERE num = %s", (nickname, result[0]))
                         return True
-                    else:
-                        return False
-            except Exception as e:
+                    return False
+            except Exception:
                 self.conn.rollback()
                 return False
 
@@ -334,7 +256,7 @@ class DatabaseManager:
             try:
                 with self.conn.cursor() as cursor:
                     cursor.execute("SELECT 1")
-                    return True, "정상 응답"
+                    return True, "정상"
             except Exception as e: return False, str(e)
 
     def get_last_used_word(self):
@@ -343,8 +265,7 @@ class DatabaseManager:
             if not self.conn: return ("시작", None)
             try:
                 with self.conn.cursor() as cursor:
-                    sql = "SELECT word, is_use_user FROM ko_word WHERE is_use = TRUE ORDER BY is_use_date DESC, num DESC LIMIT 1"
-                    cursor.execute(sql)
+                    cursor.execute("SELECT word, is_use_user FROM ko_word WHERE is_use = TRUE ORDER BY is_use_date DESC, num DESC LIMIT 1")
                     result = cursor.fetchone()
                     return (str(result[0]), str(result[1])) if result else ("시작", None)
             except Exception: return ("시작", None)
@@ -355,8 +276,7 @@ class DatabaseManager:
             if not self.conn: return "시작"
             try:
                 with self.conn.cursor() as cursor:
-                    sql = "SELECT word FROM ko_word WHERE can_use = TRUE AND available = TRUE ORDER BY RAND() LIMIT 1"
-                    cursor.execute(sql)
+                    cursor.execute("SELECT word FROM ko_word WHERE can_use = TRUE AND available = TRUE ORDER BY RAND() LIMIT 1")
                     result = cursor.fetchone()
                     return str(result[0]) if result else "시작"
             except Exception: return "시작"
@@ -365,9 +285,7 @@ class DatabaseManager:
         try:
             base_path = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.abspath(".")
             logs_dir = os.path.join(base_path, "logs")
-            
-            if not os.path.exists(logs_dir): 
-                return False, "logs 디렉토리가 없어 게임 기록 백업 업무를 수행할 수 없습니다."
+            if not os.path.exists(logs_dir): return False, "logs 폴더 없음"
                 
             start_str = start_dt.strftime("%Y%m%d_%H%M%S") if start_dt else "Unknown"
             end_str = end_dt.strftime("%Y%m%d_%H%M%S") if end_dt else "Unknown"
@@ -376,58 +294,18 @@ class DatabaseManager:
             with self.lock:
                 self._ensure_connection()
                 if not self.conn: return False, None
-                
                 with self.conn.cursor() as cursor:
                     cursor.execute("SELECT * FROM game_history")
                     rows = cursor.fetchall()
                     cols = [i[0] for i in cursor.description] if cursor.description else []
-
                     if rows:
                         with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
                             writer = csv.writer(f)
                             if cols: writer.writerow(cols)
                             writer.writerows(rows)
-                    
                     cursor.execute("TRUNCATE TABLE game_history")
-                    
             return True, filename
-        except Exception as e:
-            print(f"[오류] 히스토리 내보내기 및 비우기 실패: {e}")
-            return False, str(e)
-
-    def export_all_data_to_csv(self):
-        try:
-            base_path = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.abspath(".")
-            backup_dir = os.path.join(base_path, "backups")
-            
-            if not os.path.exists(backup_dir): 
-                return False, "backups 디렉토리가 없어 전체 데이터 백업 업무를 수행할 수 없습니다."
-                
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            tables = ["app_logs", "game_history", "game_status"]
-            tables_data = {}
-
-            with self.lock:
-                self._ensure_connection()
-                if not self.conn: return False, None
-                with self.conn.cursor() as cursor:
-                    for table in tables:
-                        try:
-                            cursor.execute(f"SELECT * FROM {table}")
-                            rows = cursor.fetchall()
-                            cols = [i[0] for i in cursor.description] if cursor.description else []
-                            tables_data[table] = (cols, rows)
-                        except Exception: continue
-
-            for table, (cols, rows) in tables_data.items():
-                filename = os.path.join(backup_dir, f"{table}_{timestamp}.csv")
-                with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
-                    writer = csv.writer(f)
-                    if cols: writer.writerow(cols)
-                    writer.writerows(rows)
-            return True, timestamp
-        except Exception as e: 
-            return False, str(e)
+        except Exception as e: return False, str(e)
 
     def reset_all_tables(self):
         with self.lock:

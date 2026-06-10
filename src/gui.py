@@ -371,7 +371,6 @@ class GameOverWidget(QWidget):
 
 class ChzzkGameGUI(QWidget):
     image_load_finished = pyqtSignal(str, bytes)
-    reconnect_check_result = pyqtSignal(str, bool, int)
 
     def __init__(self):
         super().__init__()
@@ -397,11 +396,6 @@ class ChzzkGameGUI(QWidget):
 
         self.word_image_map = {}
         
-        self.reconnect_state = {
-            '치지직': {'interval': 5, 'delta': 5, 'active': False},
-            '유튜브': {'interval': 5, 'delta': 5, 'active': False}
-        }
-        
         self.start_time = None 
         self.program_start_dt = datetime.now() 
         self.current_game_start_dt = datetime.now() 
@@ -425,6 +419,11 @@ class ChzzkGameGUI(QWidget):
         self.unlock_fallback_timer = QTimer(self)
         self.unlock_fallback_timer.setSingleShot(True)
         self.unlock_fallback_timer.timeout.connect(self.force_unlock_input)
+        
+        # 최적화 적용: 불필요한 반복 재접속 로직 대신 단일 110초 오프라인 감지 타이머 운용
+        self.offline_timer = QTimer(self)
+        self.offline_timer.setSingleShot(True)
+        self.offline_timer.timeout.connect(self._on_offline_timeout)
         
         self.email_sent_flag = False 
         self.last_sent_hour = -1 
@@ -542,6 +541,7 @@ class ChzzkGameGUI(QWidget):
                     start_word = text
             elif mode == "RANDOM":
                 start_word = self.db_manager.get_random_start_word()
+                if not start_word: start_word = "시작"
             elif mode == "RECENT":
                 ret = self.db_manager.get_last_used_word()
                 if isinstance(ret, tuple):
@@ -585,7 +585,7 @@ class ChzzkGameGUI(QWidget):
         event.accept()
 
     def _trigger_abnormal_shutdown(self):
-        msg = "모든 송출 플랫폼(치지직, 유튜브)의 연결이 끊어지고, 110초 대기 재접속 시도에도 최종 실패하여 프로그램을 비정상 종료합니다."
+        msg = "모든 송출 플랫폼의 연결이 110초 이상 끊어졌습니다. 네트워크 상태가 불안정하여 프로그램을 비정상 종료합니다."
         threading.Thread(target=send_crash_report_email, args=(msg,), daemon=True).start()
         self.log_message(f"[치명적 오류] {msg}")
         QTimer.singleShot(3000, self.close)
@@ -951,7 +951,6 @@ class ChzzkGameGUI(QWidget):
         self.signals.gui_log_message.connect(self.log_message)
         self.signals.game_check_result.connect(self.on_word_check_finished)
         self.image_load_finished.connect(self._on_image_loaded)
-        self.reconnect_check_result.connect(self._on_reconnect_result)
 
     def handle_stream_offline(self, platform_name):
         if platform_name in self.platform_status:
@@ -969,68 +968,10 @@ class ChzzkGameGUI(QWidget):
                 self.lbl_word_image.clear()
                 self.lbl_word_image.setStyleSheet("background-color: transparent;")
                 self.log_message("[시스템] 모든 방송 연결이 끊겼습니다. 재접속 대기 중...")
-        
-        if platform_name in self.reconnect_state and not self.reconnect_state[platform_name]['active']:
-            self.reconnect_state[platform_name]['active'] = True
-            self.reconnect_state[platform_name]['interval'] = 5
-            self.reconnect_state[platform_name]['delta'] = 5
-            self.log_message(f"[시스템] {platform_name} 연결 유실 확인. 5초 후 재접속을 시도합니다.")
-            QTimer.singleShot(5000, lambda p=platform_name: self.attempt_reconnect(p))
-
-    def attempt_reconnect(self, platform_name):
-        if platform_name not in self.reconnect_state or not self.reconnect_state[platform_name]['active']:
-            return
-        current_interval = self.reconnect_state[platform_name]['interval']
-        threading.Thread(target=self._bg_check_reconnect, args=(platform_name, current_interval), daemon=True).start()
-
-    def _bg_check_reconnect(self, platform_name, current_interval):
-        is_ok = False
-        if platform_name == '치지직':
-            is_ok, msg = self.chzzk_monitor.check_live_status_sync()
-        elif platform_name == '유튜브':
-            is_ok, msg = self.youtube_monitor.check_live_status_sync()
-            
-        self.reconnect_check_result.emit(platform_name, is_ok, current_interval)
-
-    def _on_reconnect_result(self, platform_name, is_ok, current_interval):
-        if platform_name not in self.reconnect_state or not self.reconnect_state[platform_name]['active']:
-            return
-            
-        if is_ok:
-            self.log_message(f"[시스템] {platform_name} 재접속 성공!")
-            self.reconnect_state[platform_name]['active'] = False
-            
-            loop = asyncio.get_event_loop()
-            if platform_name == '치지직':
-                loop.create_task(self.chzzk_monitor.run())
-            elif platform_name == '유튜브':
-                loop.create_task(self.youtube_monitor.run())
                 
-            self.handle_stream_connected(platform_name)
-        else:
-            both_offline = True
-            if self.use_chzzk and self.platform_status.get('치지직', False):
-                both_offline = False
-            if self.use_youtube and self.platform_status.get('유튜브', False):
-                both_offline = False
-                
-            if current_interval >= 110 and both_offline:
-                self.reconnect_state[platform_name]['active'] = False
-                self._trigger_abnormal_shutdown()
-                return
-                
-            delta = self.reconnect_state[platform_name]['delta']
-            next_interval = current_interval + delta
-            next_delta = delta + 5
-            
-            if next_interval >= 110:
-                next_interval = 110
-                
-            self.reconnect_state[platform_name]['interval'] = next_interval
-            self.reconnect_state[platform_name]['delta'] = next_delta
-            
-            self.log_message(f"[시스템] {platform_name} 재접속 실패. {next_interval}초 후 다시 시도합니다...")
-            QTimer.singleShot(next_interval * 1000, lambda p=platform_name: self.attempt_reconnect(p))
+                # 최적화 적용: 불필요한 API 재접속 폴링 로직 삭제, 순수 타이머로 110초 감지 수행
+                if not self.offline_timer.isActive():
+                    self.offline_timer.start(110000)
 
     def handle_stream_connected(self, platform_name):
         was_connected = self.platform_status.get(platform_name, False)
@@ -1040,10 +981,15 @@ class ChzzkGameGUI(QWidget):
 
         if self.is_global_offline:
             self.is_global_offline = False
+            self.offline_timer.stop()
             self.lbl_current_word.setStyleSheet("color: white;")
             self.set_responsive_text(self.current_word_text)
             self.display_word_image(self.current_word_text) 
             self.log_message("[시스템] 방송 연결 복구. 게임 재개.")
+            
+    def _on_offline_timeout(self):
+        if self.is_global_offline:
+            self._trigger_abnormal_shutdown()
 
     def update_runtime(self):
         if self.start_time is None:

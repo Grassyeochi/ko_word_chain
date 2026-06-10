@@ -19,5 +19,11 @@ if __name__ == "__main__":
     window.raise_()
     window.activateWindow()
     
-    with loop:
-        loop.run_forever()
+    try:
+        with loop:
+            loop.run_forever()
+    except KeyboardInterrupt:
+        print("[시스템] 사용자에 의해 강제 종료되었습니다.")
+    finally:
+        if not loop.is_closed():
+            loop.close()
